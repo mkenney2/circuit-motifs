@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+
+# Data (large files — track separately or use Git LFS)
+data/raw/
+data/processed/
+data/results/
+
+# OS files
+Thumbs.db
+.DS_Store
+nul
+
+# Claude Code local settings
+.claude/
+CLAUDE.md
+
+# Misc
+repo_tree.txt
+network-motif-analysis-plan.md
+
+# PDFs
+*.pdf
+
+# Stray images in repo root (figures belong in figures/)
+/*.png
