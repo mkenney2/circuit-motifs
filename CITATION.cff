@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "circuit-motifs: Network Motif Analysis of LLM Attribution Graphs"
+authors:
+  - family-names: Kenney
+    given-names: Michael
+version: 0.1.0
+date-released: "2025-02-07"
+url: "https://github.com/mkenney2/circuit-motifs"
+repository-code: "https://github.com/mkenney2/circuit-motifs"
+license: MIT
+keywords:
+  - mechanistic-interpretability
+  - network-motifs
+  - attribution-graphs
+  - circuit-tracing
+  - LLM
+abstract: >-
+  Applies network motif analysis (Milo et al., 2002) to LLM attribution
+  graphs from Anthropic's circuit-tracer. Identifies structural fingerprints
+  — feedforward loops, chains, fan-in/fan-out patterns — that characterize
+  different types of LLM computation across 99 attribution graphs.

@@ -11,7 +11,12 @@ When LLMs process prompts, tools like Anthropic's [circuit-tracer](https://githu
 
 **Network motifs** are small subgraph patterns (3--4 nodes) that appear significantly more or less often than expected by chance. In biology, motif profiles act as structural fingerprints. This project asks: **can motif profiles distinguish different types of LLM computation?**
 
-<!-- Full results and discussion: [blog post](TODO) -->
+### Key Finding
+
+![Motif enrichment/depletion across 99 LLM attribution graphs](figures/fig2_motif_profile.png)
+
+*Feedforward loops (030T) are universally enriched (mean Z = +26.2) while mutual-connection motifs (111U, 120C) are systematically depleted --- a structural signature shared across all task types.*
+
 
 ## Installation
 
@@ -154,6 +159,20 @@ pytest
 - Mangan, S. & Alon, U. (2003). "Structure and function of the feed-forward loop network motif." *PNAS* 100(21), 11980--11985.
 - Ameisen, E. et al. (2025). "Circuit Tracing: Revealing Computational Graphs in Language Models." Anthropic.
 - Lindsey, J. et al. (2025). "The Biology of a Large Language Model." Anthropic.
+
+## Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@software{kenney2025circuitmotifs,
+  author = {Kenney, Michael},
+  title = {circuit-motifs: Network Motif Analysis of LLM Attribution Graphs},
+  year = {2025},
+  url = {https://github.com/mkenney2/circuit-motifs},
+  license = {MIT}
+}
+```
 
 ## License
 
