@@ -1,0 +1,11 @@
+# Pinned dependencies for reproducibility.
+# For development/editable install, use: pip install -e .
+# For exact reproduction of tested environment, use: pip install -r requirements.txt
+python-igraph==1.0.0
+networkx==3.5
+numpy==1.26.4
+scipy==1.16.0
+matplotlib==3.10.3
+seaborn==0.13.2
+requests==2.32.3
+tqdm==4.67.1
