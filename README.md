@@ -76,6 +76,8 @@ result = client.generate_and_save("The capital of France is", "data/raw/custom")
 
 ### Interactive Explorer
 
+Requires downloading the full dataset first (see above), then:
+
 ```bash
 streamlit run app.py
 ```
@@ -165,10 +167,10 @@ pytest
 If you use this code in your research, please cite:
 
 ```bibtex
-@software{kenney2025circuitmotifs,
+@software{kenney2026circuitmotifs,
   author = {Kenney, Michael},
   title = {circuit-motifs: Network Motif Analysis of LLM Attribution Graphs},
-  year = {2025},
+  year = {2026},
   url = {https://github.com/mkenney2/circuit-motifs},
   license = {MIT}
 }
