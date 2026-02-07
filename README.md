@@ -25,20 +25,21 @@ pip install -e ".[app]"
 
 Requires Python 3.10+.
 
-## Usage
+## Quick Start
+
+Two example attribution graphs are bundled in `data/examples/` so you can try the library immediately:
 
 ```python
-from src import load_attribution_graph, compute_motif_census, MOTIF_FFL
+from src import load_attribution_graph, compute_motif_census, generate_configuration_null, MOTIF_FFL
 
-# Load an attribution graph (circuit-tracer JSON)
-g = load_attribution_graph("data/raw/multihop/capital-state-dallas.json")
+# Load a bundled example graph
+g = load_attribution_graph("data/examples/capital-state-dallas.json")
 
 # Motif census (size-3 triads)
 result = compute_motif_census(g, size=3)
 print(f"Feedforward loops: {result.raw_counts[MOTIF_FFL]}")
 
 # Null model + Z-scores (1,000 degree-preserving rewirings)
-from src import generate_configuration_null
 null_result = generate_configuration_null(g, n_random=1000)
 print(f"FFL Z-score: {null_result.z_scores[MOTIF_FFL]:.1f}")
 
@@ -50,6 +51,22 @@ print(f"Found {len(instances)} feedforward loop instances")
 # Visualize top instance in Neuronpedia style
 from src import plot_top_motif
 fig, instance = plot_top_motif(g, MOTIF_FFL, rank=0, figsize=(18, 14))
+```
+
+### Downloading the Full Dataset
+
+To download all 99 attribution graphs from the Anthropic circuit-tracing paper (no API key needed):
+
+```python
+from src.neuronpedia_client import NeuronpediaClient
+client = NeuronpediaClient()
+client.download_all_anthropic_graphs("data/raw", categorize=True)
+```
+
+Or generate a new graph via Neuronpedia (runs on their GPUs, no local GPU needed):
+
+```python
+result = client.generate_and_save("The capital of France is", "data/raw/custom")
 ```
 
 ### Interactive Explorer

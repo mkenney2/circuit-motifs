@@ -30,6 +30,9 @@ data/raw/
 data/processed/
 data/results/
 
+# But DO track bundled example graphs
+!data/examples/
+
 # OS files
 Thumbs.db
 .DS_Store
