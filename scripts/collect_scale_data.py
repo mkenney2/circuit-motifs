@@ -133,6 +133,10 @@ def generate_graph_local(
     print(f"  Attributing: {prompt[:60]}...")
     graph = attribute(prompt=prompt, model=model, verbose=True)
 
+    # Move graph to CPU before pruning to avoid GPU OOM on dense adjacency
+    print(f"  Moving graph to CPU for pruning...")
+    graph = graph.to("cpu")
+
     print(f"  Pruning and saving (node={node_threshold}, edge={edge_threshold})...")
     create_graph_files(
         graph,
