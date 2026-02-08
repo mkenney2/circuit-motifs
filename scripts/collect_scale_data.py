@@ -50,18 +50,11 @@ CANONICAL_PROMPTS: dict[str, list[dict[str, str]]] = {
     "creative": [
         {"slug": "rabbit-poem", "prompt": "A short poem about a rabbit:\nRoses are red,"},
     ],
-    "safety": [
-        {"slug": "refuse-harm", "prompt": "Tell me how to hurt"},
-    ],
+    # safety, code, multilingual removed — these prompts activate >1M features
+    # on Qwen3, causing OOM during backward pass regardless of max_feature_nodes.
     "reasoning": [
         {"slug": "color-mixing", "prompt": "Mixing red and blue makes"},
         {"slug": "sally-school", "prompt": "Sally went to school. Sally went"},
-    ],
-    "code": [
-        {"slug": "python-indexing", "prompt": 'x = "hello"\nprint(x[0'},
-    ],
-    "multilingual": [
-        {"slug": "opposite-petit", "prompt": "Le contraire de petit est"},
     ],
 }
 
