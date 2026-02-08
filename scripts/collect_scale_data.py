@@ -66,38 +66,18 @@ CANONICAL_PROMPTS: dict[str, list[dict[str, str]]] = {
 }
 
 
-def generate_graph_local(
-    prompt: str,
-    model_spec: ModelSpec,
-    transcoder_config: TranscoderConfig | None = None,
-    node_threshold: float = 0.8,
-    edge_threshold: float = 0.85,
-) -> dict:
-    """Generate an attribution graph locally using circuit-tracer.
-
-    Requires GPU and circuit-tracer package installed.
+def _load_model(model_spec: ModelSpec, transcoder_config: TranscoderConfig | None = None):
+    """Load a ReplacementModel for local graph generation.
 
     Args:
-        prompt: The prompt to trace.
         model_spec: ModelSpec for the target model.
         transcoder_config: Which transcoder to use. Defaults to model's default.
-        node_threshold: Node pruning threshold.
-        edge_threshold: Edge pruning threshold.
 
     Returns:
-        Graph data dict (same format as Neuronpedia JSON).
-
-    Raises:
-        ImportError: If circuit-tracer is not installed.
+        Loaded ReplacementModel instance.
     """
-    try:
-        from circuit_tracer import ReplacementModel
-        import torch
-    except ImportError:
-        raise ImportError(
-            "circuit-tracer is required for local graph generation. "
-            "Install with: pip install git+https://github.com/safety-research/circuit-tracer.git"
-        )
+    from circuit_tracer import ReplacementModel
+    import torch
 
     if transcoder_config is None:
         transcoder_config = model_spec.default_transcoder
@@ -108,17 +88,61 @@ def generate_graph_local(
     model = ReplacementModel.from_pretrained(
         model_spec.hf_model_id,
         transcoder_config.hf_repo,
+        backend="nnsight",
         dtype=torch.bfloat16,
     )
+    return model
 
-    print(f"  Tracing: {prompt[:60]}...")
-    result = model.trace(
-        prompt,
+
+def generate_graph_local(
+    prompt: str,
+    model,
+    output_path: Path,
+    slug: str,
+    node_threshold: float = 0.8,
+    edge_threshold: float = 0.98,
+) -> Path:
+    """Generate an attribution graph locally using circuit-tracer.
+
+    Uses circuit-tracer's attribute() function and create_graph_files()
+    to produce a JSON graph file compatible with the analysis pipeline.
+
+    Args:
+        prompt: The prompt to trace.
+        model: Loaded ReplacementModel instance.
+        output_path: Directory to save the JSON file.
+        slug: Graph slug (used as filename stem).
+        node_threshold: Node pruning threshold.
+        edge_threshold: Edge pruning threshold.
+
+    Returns:
+        Path to the saved JSON file.
+
+    Raises:
+        ImportError: If circuit-tracer is not installed.
+    """
+    try:
+        from circuit_tracer import attribute
+        from circuit_tracer.utils.create_graph_files import create_graph_files
+    except ImportError:
+        raise ImportError(
+            "circuit-tracer is required for local graph generation. "
+            "Install with: pip install git+https://github.com/safety-research/circuit-tracer.git"
+        )
+
+    print(f"  Attributing: {prompt[:60]}...")
+    graph = attribute(prompt=prompt, model=model, verbose=True)
+
+    print(f"  Pruning and saving (node={node_threshold}, edge={edge_threshold})...")
+    create_graph_files(
+        graph,
+        slug=slug,
+        output_path=str(output_path),
         node_threshold=node_threshold,
         edge_threshold=edge_threshold,
     )
 
-    return result.to_dict()
+    return output_path / f"{slug}.json"
 
 
 def generate_graph_api(
@@ -188,56 +212,75 @@ def collect_for_model(
             k: v for k, v in CANONICAL_PROMPTS.items() if k in categories
         }
 
-    client = None
-    if mode == "api":
-        client = NeuronpediaClient(api_key=api_key)
-
+    # Check if there's anything to do before loading the model
+    prompts_needed = []
     for category, prompt_list in prompts_to_collect.items():
         output_dir = output_base / model_id / category
-        output_dir.mkdir(parents=True, exist_ok=True)
-
         for prompt_info in prompt_list:
-            slug = prompt_info["slug"]
-            prompt = prompt_info["prompt"]
-            output_path = output_dir / f"{slug}.json"
-
-            if output_path.exists():
-                print(f"  [skip] {model_id}/{category}/{slug}.json (exists)")
+            output_path = output_dir / f"{prompt_info['slug']}.json"
+            if not output_path.exists():
+                prompts_needed.append((category, prompt_info))
+            else:
+                print(f"  [skip] {model_id}/{category}/{prompt_info['slug']}.json (exists)")
                 saved.append(output_path)
-                continue
 
-            print(f"  [gen]  {model_id}/{category}/{slug}")
-            try:
-                if mode == "local":
-                    graph_data = generate_graph_local(prompt, model_spec)
+    if not prompts_needed:
+        print(f"  All graphs already exist for {model_id}")
+        return saved
+
+    # Load model once for all prompts (local mode)
+    model = None
+    client = None
+    if mode == "local":
+        model = _load_model(model_spec)
+    elif mode == "api":
+        client = NeuronpediaClient(api_key=api_key)
+
+    for category, prompt_info in prompts_needed:
+        slug = prompt_info["slug"]
+        prompt = prompt_info["prompt"]
+        output_dir = output_base / model_id / category
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{slug}.json"
+
+        print(f"  [gen]  {model_id}/{category}/{slug}")
+        try:
+            if mode == "local":
+                result_path = generate_graph_local(
+                    prompt=prompt,
+                    model=model,
+                    output_path=output_dir,
+                    slug=slug,
+                )
+                saved.append(result_path)
+                print(f"    Saved to {result_path}")
+            elif mode == "api":
+                assert client is not None
+                neuronpedia_id = model_spec.neuronpedia_id or model_spec.model_id
+                source_set = NeuronpediaClient.API_SOURCE_SETS.get(neuronpedia_id)
+                result = client.generate_graph(
+                    prompt=prompt,
+                    model_id=neuronpedia_id,
+                    slug=f"{slug}-{model_id}",
+                    source_set_name=source_set,
+                )
+                # Download the generated graph
+                s3_url = result.get("s3url") or result.get("url")
+                if s3_url:
+                    graph_data = client.download_graph_json(s3_url)
                     with open(output_path, "w", encoding="utf-8") as f:
                         json.dump(graph_data, f, indent=2)
-                elif mode == "api":
-                    assert client is not None
-                    neuronpedia_id = model_spec.neuronpedia_id or model_spec.model_id
-                    source_set = NeuronpediaClient.API_SOURCE_SETS.get(neuronpedia_id)
-                    result = client.generate_graph(
-                        prompt=prompt,
-                        model_id=neuronpedia_id,
-                        slug=f"{slug}-{model_id}",
-                        source_set_name=source_set,
-                    )
-                    # Download the generated graph
-                    s3_url = result.get("s3url") or result.get("url")
-                    if s3_url:
-                        graph_data = client.download_graph_json(s3_url)
-                        with open(output_path, "w", encoding="utf-8") as f:
-                            json.dump(graph_data, f, indent=2)
-                    else:
-                        print(f"    Warning: No URL returned for {slug}")
-                        continue
+                    saved.append(output_path)
+                    print(f"    Saved to {output_path}")
+                else:
+                    print(f"    Warning: No URL returned for {slug}")
+                    continue
 
-                saved.append(output_path)
-                print(f"    Saved to {output_path}")
-
-            except Exception as e:
-                print(f"    ERROR: {e}")
-                continue
+        except Exception as e:
+            print(f"    ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
     return saved
 
