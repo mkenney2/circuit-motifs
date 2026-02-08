@@ -23,7 +23,11 @@ from src.visualization import (
     plot_top_motif,
 )
 from src.pipeline import run_pipeline, run_scale_pipeline
-from src.models import ModelSpec, get_model, gemma3_scaling_curve, GEMMA_3_MODELS
+from src.models import (
+    ModelSpec, get_model,
+    gemma3_scaling_curve, GEMMA_3_MODELS,
+    qwen3_scaling_curve, QWEN3_MODELS,
+)
 from src.scale_comparison import (
     ModelProfile,
     ScaleComparison,
@@ -60,6 +64,8 @@ __all__ = [
     "get_model",
     "gemma3_scaling_curve",
     "GEMMA_3_MODELS",
+    "qwen3_scaling_curve",
+    "QWEN3_MODELS",
     "ModelProfile",
     "ScaleComparison",
     "ScaleTrend",

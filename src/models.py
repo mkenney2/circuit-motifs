@@ -1,8 +1,8 @@
 """Model registry and transcoder configurations for cross-scale analysis.
 
 Frozen dataclasses for model metadata (layer counts, hidden dims, transcoder
-HuggingFace repos) for the Gemma 3 family (270M-27B) and legacy models
-(Gemma-2-2B, Qwen3-4B).
+HuggingFace repos) for the Qwen3 family (0.6B-14B), Gemma 3 family (270M-27B),
+and legacy models (Gemma-2-2B, Qwen3-4B).
 """
 
 from __future__ import annotations
@@ -26,6 +26,14 @@ class TranscoderConfig:
     transcoder_folder: str = "transcoder_all"
     width: int = 16384
     is_clt: bool = False
+
+
+# Map model families to their HuggingFace org for hf_model_id property
+_HF_ORGS: dict[str, str] = {
+    "gemma-2": "google",
+    "gemma-3": "google",
+    "qwen-3": "Qwen",
+}
 
 
 @dataclass(frozen=True)
@@ -65,10 +73,107 @@ class ModelSpec:
     @property
     def hf_model_id(self) -> str:
         """HuggingFace model ID for loading."""
-        return f"google/{self.model_id}"
+        org = _HF_ORGS.get(self.family, "google")
+        # Qwen uses capitalized names: Qwen/Qwen3-0.6B
+        if self.family == "qwen-3":
+            # Convert e.g. "qwen3-0.6b" -> "Qwen3-0.6B"
+            name = self.model_id.replace("qwen3", "Qwen3")
+            # Capitalize the size suffix (e.g. "0.6b" -> "0.6B")
+            parts = name.rsplit("-", 1)
+            if len(parts) == 2 and parts[1][-1].lower() == "b":
+                name = f"{parts[0]}-{parts[1].upper()}"
+            return f"{org}/{name}"
+        return f"{org}/{self.model_id}"
 
 
-# ── Gemma 3 IT family (GemmaScope 2 transcoders) ────────────────────────
+# ── Qwen3 dense family (circuit-tracer compatible transcoders) ───────────
+
+QWEN3_MODELS: dict[str, ModelSpec] = {
+    "qwen3-0.6b": ModelSpec(
+        model_id="qwen3-0.6b",
+        family="qwen-3",
+        variant="base",
+        n_params=600,
+        n_layers=28,
+        hidden_dim=1024,
+        transcoders=(
+            TranscoderConfig(
+                hf_repo="mwhanna/qwen3-0.6b-transcoders-lowl0",
+                transcoder_folder="",
+                width=16384,
+                is_clt=False,
+            ),
+        ),
+    ),
+    "qwen3-1.7b": ModelSpec(
+        model_id="qwen3-1.7b",
+        family="qwen-3",
+        variant="base",
+        n_params=1700,
+        n_layers=28,
+        hidden_dim=2048,
+        transcoders=(
+            TranscoderConfig(
+                hf_repo="mwhanna/qwen3-1.7b-transcoders-lowl0",
+                transcoder_folder="",
+                width=16384,
+                is_clt=False,
+            ),
+        ),
+    ),
+    "qwen3-4b": ModelSpec(
+        model_id="qwen3-4b",
+        family="qwen-3",
+        variant="base",
+        n_params=4000,
+        n_layers=36,
+        hidden_dim=2560,
+        transcoders=(
+            TranscoderConfig(
+                hf_repo="mwhanna/qwen3-4b-transcoders",
+                transcoder_folder="",
+                width=16384,
+                is_clt=False,
+            ),
+        ),
+        neuronpedia_id="qwen3-4b",
+    ),
+    "qwen3-8b": ModelSpec(
+        model_id="qwen3-8b",
+        family="qwen-3",
+        variant="base",
+        n_params=8000,
+        n_layers=36,
+        hidden_dim=4096,
+        transcoders=(
+            TranscoderConfig(
+                hf_repo="mwhanna/qwen3-8b-transcoders",
+                transcoder_folder="",
+                width=16384,
+                is_clt=False,
+            ),
+        ),
+    ),
+    "qwen3-14b": ModelSpec(
+        model_id="qwen3-14b",
+        family="qwen-3",
+        variant="base",
+        n_params=14000,
+        n_layers=40,
+        hidden_dim=5120,
+        transcoders=(
+            TranscoderConfig(
+                hf_repo="mwhanna/qwen3-14b-transcoders-lowl0",
+                transcoder_folder="",
+                width=16384,
+                is_clt=False,
+            ),
+        ),
+    ),
+}
+
+
+# ── Gemma 3 IT family (GemmaScope 2 transcoders — not yet circuit-tracer compatible) ──
 
 GEMMA_3_MODELS: dict[str, ModelSpec] = {
     "gemma-3-270m-it": ModelSpec(
@@ -186,21 +291,13 @@ LEGACY_MODELS: dict[str, ModelSpec] = {
         ),
         neuronpedia_id="gemma-2-2b",
     ),
-    "qwen3-4b": ModelSpec(
-        model_id="qwen3-4b",
-        family="qwen-3",
-        variant="base",
-        n_params=4000,
-        n_layers=36,
-        hidden_dim=2560,
-        transcoders=(),
-        neuronpedia_id="qwen3-4b",
-    ),
 }
 
 # ── Combined registry ────────────────────────────────────────────────────
 
-ALL_MODELS: dict[str, ModelSpec] = {**GEMMA_3_MODELS, **LEGACY_MODELS}
+ALL_MODELS: dict[str, ModelSpec] = {
+    **QWEN3_MODELS, **GEMMA_3_MODELS, **LEGACY_MODELS,
+}
 
 
 def get_model(model_id: str) -> ModelSpec:
@@ -230,3 +327,12 @@ def gemma3_scaling_curve() -> list[ModelSpec]:
         List of ModelSpec in order: 270M, 1B, 4B, 12B, 27B.
     """
     return sorted(GEMMA_3_MODELS.values(), key=lambda m: m.n_params)
+
+
+def qwen3_scaling_curve() -> list[ModelSpec]:
+    """Return Qwen3 dense models sorted by parameter count (ascending).
+
+    Returns:
+        List of ModelSpec in order: 0.6B, 1.7B, 4B, 8B, 14B.
+    """
+    return sorted(QWEN3_MODELS.values(), key=lambda m: m.n_params)

@@ -92,10 +92,11 @@ def generate_graph_local(
     """
     try:
         from circuit_tracer import ReplacementModel
+        import torch
     except ImportError:
         raise ImportError(
             "circuit-tracer is required for local graph generation. "
-            "Install with: pip install circuit-tracer"
+            "Install with: pip install git+https://github.com/safety-research/circuit-tracer.git"
         )
 
     if transcoder_config is None:
@@ -106,8 +107,8 @@ def generate_graph_local(
     print(f"  Loading model {model_spec.hf_model_id}...")
     model = ReplacementModel.from_pretrained(
         model_spec.hf_model_id,
-        transcoder_repo=transcoder_config.hf_repo,
-        transcoder_folder=transcoder_config.transcoder_folder,
+        transcoder_config.hf_repo,
+        dtype=torch.bfloat16,
     )
 
     print(f"  Tracing: {prompt[:60]}...")

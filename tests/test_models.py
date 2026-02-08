@@ -8,10 +8,12 @@ from src.models import (
     ModelSpec,
     TranscoderConfig,
     GEMMA_3_MODELS,
+    QWEN3_MODELS,
     LEGACY_MODELS,
     ALL_MODELS,
     get_model,
     gemma3_scaling_curve,
+    qwen3_scaling_curve,
 )
 
 
@@ -94,12 +96,42 @@ class TestGemma3Registry:
             assert len(plt_transcoders) >= 1, f"{model_id} missing PLT transcoder"
 
 
+class TestQwen3Registry:
+    def test_all_five_sizes_registered(self):
+        expected_ids = {
+            "qwen3-0.6b", "qwen3-1.7b", "qwen3-4b", "qwen3-8b", "qwen3-14b",
+        }
+        assert set(QWEN3_MODELS.keys()) == expected_ids
+
+    def test_correct_layer_counts(self):
+        expected_layers = {
+            "qwen3-0.6b": 28,
+            "qwen3-1.7b": 28,
+            "qwen3-4b": 36,
+            "qwen3-8b": 36,
+            "qwen3-14b": 40,
+        }
+        for model_id, expected in expected_layers.items():
+            assert QWEN3_MODELS[model_id].n_layers == expected
+
+    def test_all_have_transcoders(self):
+        for model_id, spec in QWEN3_MODELS.items():
+            assert len(spec.transcoders) >= 1, f"{model_id} missing transcoder"
+            assert spec.default_transcoder is not None
+
+    def test_hf_model_id(self):
+        assert get_model("qwen3-0.6b").hf_model_id == "Qwen/Qwen3-0.6B"
+        assert get_model("qwen3-4b").hf_model_id == "Qwen/Qwen3-4B"
+        assert get_model("qwen3-14b").hf_model_id == "Qwen/Qwen3-14B"
+
+    def test_in_all_models(self):
+        for model_id in QWEN3_MODELS:
+            assert model_id in ALL_MODELS
+
+
 class TestLegacyModels:
     def test_gemma2_registered(self):
         assert "gemma-2-2b" in LEGACY_MODELS
-
-    def test_qwen_registered(self):
-        assert "qwen3-4b" in LEGACY_MODELS
 
     def test_in_all_models(self):
         for model_id in LEGACY_MODELS:
@@ -149,3 +181,25 @@ class TestGemma3ScalingCurve:
     def test_all_are_model_spec(self):
         for spec in gemma3_scaling_curve():
             assert isinstance(spec, ModelSpec)
+
+
+class TestQwen3ScalingCurve:
+    def test_returns_five_models(self):
+        curve = qwen3_scaling_curve()
+        assert len(curve) == 5
+
+    def test_sorted_by_param_count(self):
+        curve = qwen3_scaling_curve()
+        params = [m.n_params for m in curve]
+        assert params == sorted(params)
+
+    def test_ordering(self):
+        curve = qwen3_scaling_curve()
+        ids = [m.model_id for m in curve]
+        assert ids == [
+            "qwen3-0.6b",
+            "qwen3-1.7b",
+            "qwen3-4b",
+            "qwen3-8b",
+            "qwen3-14b",
+        ]

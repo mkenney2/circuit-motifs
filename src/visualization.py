@@ -918,11 +918,18 @@ def plot_top_motif(
 # --- Cross-scale visualization ---
 
 MODEL_SCALE_COLORS: dict[str, str] = {
+    # Gemma 3 family
     "gemma-3-270m-it": "#4e79a7",
     "gemma-3-1b-it":   "#f28e2b",
     "gemma-3-4b-it":   "#e15759",
     "gemma-3-12b-it":  "#76b7b2",
     "gemma-3-27b-it":  "#59a14f",
+    # Qwen3 family
+    "qwen3-0.6b":      "#4e79a7",
+    "qwen3-1.7b":      "#f28e2b",
+    "qwen3-4b":        "#e15759",
+    "qwen3-8b":        "#76b7b2",
+    "qwen3-14b":       "#59a14f",
 }
 
 
