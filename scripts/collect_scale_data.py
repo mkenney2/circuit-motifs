@@ -133,11 +133,12 @@ def generate_graph_local(
     import tempfile
 
     print(f"  Attributing: {prompt[:60]}...")
-    # Cap feature nodes at 40K to avoid INT_MAX overflow in pruning
-    # (adjacency matrix is n² elements; 40K² = 1.6B < INT_MAX = 2.15B)
+    # Cap feature nodes to keep VRAM usage feasible for larger models (8B/14B)
+    # and ensure comparability across scales. 15K² = 225M elements, well within
+    # INT_MAX and ~80GB VRAM budget even for 14B models.
     graph = attribute(
         prompt=prompt, model=model, verbose=True,
-        max_feature_nodes=40000,
+        max_feature_nodes=15000,
     )
 
     # Save as .pt first, then convert to JSON via create_graph_files
