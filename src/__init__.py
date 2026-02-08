@@ -22,7 +22,15 @@ from src.visualization import (
     plot_graph_with_motif,
     plot_top_motif,
 )
-from src.pipeline import run_pipeline
+from src.pipeline import run_pipeline, run_scale_pipeline
+from src.models import ModelSpec, get_model, gemma3_scaling_curve, GEMMA_3_MODELS
+from src.scale_comparison import (
+    ModelProfile,
+    ScaleComparison,
+    ScaleTrend,
+    build_model_profile,
+    run_scale_comparison,
+)
 
 __all__ = [
     "__version__",
@@ -47,4 +55,14 @@ __all__ = [
     "plot_graph_with_motif",
     "plot_top_motif",
     "run_pipeline",
+    "run_scale_pipeline",
+    "ModelSpec",
+    "get_model",
+    "gemma3_scaling_curve",
+    "GEMMA_3_MODELS",
+    "ModelProfile",
+    "ScaleComparison",
+    "ScaleTrend",
+    "build_model_profile",
+    "run_scale_comparison",
 ]

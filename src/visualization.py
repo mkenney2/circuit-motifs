@@ -29,6 +29,7 @@ from src.motif_census import (
 )
 from src.null_model import NullModelResult
 from src.comparison import TaskProfile
+from src.scale_comparison import ModelProfile, ScaleTrend
 
 
 # Color palette for task categories
@@ -912,3 +913,288 @@ def plot_top_motif(
     instance = instances[rank]
     fig = plot_graph_with_motif(graph, instance, **kwargs)
     return fig, instance
+
+
+# --- Cross-scale visualization ---
+
+MODEL_SCALE_COLORS: dict[str, str] = {
+    "gemma-3-270m-it": "#4e79a7",
+    "gemma-3-1b-it":   "#f28e2b",
+    "gemma-3-4b-it":   "#e15759",
+    "gemma-3-12b-it":  "#76b7b2",
+    "gemma-3-27b-it":  "#59a14f",
+}
+
+
+def plot_scale_trend(
+    scale_trends: list[ScaleTrend],
+    motif_indices: list[int] | None = None,
+    title: str = "Motif Z-Score Scaling Trends",
+    figsize: tuple[float, float] = (12, 6),
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Plot Z-score vs log(params) line plot with error bands.
+
+    Args:
+        scale_trends: List of ScaleTrend objects from compute_scale_trends().
+        motif_indices: Which motif indices to plot. Defaults to connected triads.
+        figsize: Figure size.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    if motif_indices is None:
+        motif_indices = CONNECTED_TRIAD_INDICES
+
+    trends = [t for t in scale_trends if t.motif_index in motif_indices]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for trend in trends:
+        if not trend.param_counts:
+            continue
+        x = [np.log10(p * 1e6) for p in trend.param_counts]
+        y = trend.values
+        y_std = trend.std_values
+
+        color = f"C{motif_indices.index(trend.motif_index) % 10}"
+        label = trend.motif_label
+        if trend.is_significant:
+            label += " *"
+
+        ax.plot(x, y, "o-", label=label, color=color, linewidth=2, markersize=6)
+
+        if any(s > 0 for s in y_std):
+            y_arr = np.array(y)
+            s_arr = np.array(y_std)
+            ax.fill_between(x, y_arr - s_arr, y_arr + s_arr, alpha=0.15, color=color)
+
+    # X-axis labels: model names at tick positions
+    if trends and trends[0].param_counts:
+        tick_positions = [np.log10(p * 1e6) for p in trends[0].param_counts]
+        tick_labels = [f"{p}M" if p < 1000 else f"{p // 1000}B"
+                       for p in trends[0].param_counts]
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, fontsize=10)
+
+    ax.axhline(y=2.0, color="red", linestyle="--", alpha=0.3, label="Z = 2.0")
+    ax.axhline(y=-2.0, color="red", linestyle="--", alpha=0.3)
+    ax.axhline(y=0, color="black", linewidth=0.5)
+
+    ax.set_xlabel("Model Size", fontsize=12)
+    ax.set_ylabel("Mean Z-score", fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.legend(fontsize=8, ncol=2, loc="best")
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_scale_heatmap(
+    model_profiles: dict[str, ModelProfile],
+    metric: str = "z_score",
+    title: str = "Motif Profile Across Model Scales",
+    figsize: tuple[float, float] = (14, 6),
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Plot heatmap of motif profiles across model scales.
+
+    Y-axis: models sorted smallest→largest. X-axis: motif classes.
+    Same colormap as plot_zscore_heatmap.
+
+    Args:
+        model_profiles: Dict mapping model_id to ModelProfile.
+        metric: "z_score" or "sp".
+        title: Plot title.
+        figsize: Figure size.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    sorted_models = sorted(
+        model_profiles.items(),
+        key=lambda kv: kv[1].model_spec.n_params,
+    )
+
+    model_names = []
+    for mid, mp in sorted_models:
+        p = mp.model_spec.n_params
+        label = f"{p}M" if p < 1000 else f"{p // 1000}B"
+        model_names.append(f"{mid} ({label})")
+
+    indices = CONNECTED_TRIAD_INDICES
+    col_labels = [TRIAD_LABELS[i] for i in indices]
+
+    if metric == "z_score":
+        data = np.array([mp.overall_mean_z[indices] for _, mp in sorted_models])
+        cbar_label = "Mean Z-score"
+    else:
+        data = np.array([mp.overall_mean_sp[indices] for _, mp in sorted_models])
+        cbar_label = "Mean SP"
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sns.heatmap(
+        data,
+        xticklabels=col_labels,
+        yticklabels=model_names,
+        cmap="RdBu_r",
+        center=0,
+        annot=True,
+        fmt=".1f",
+        linewidths=0.5,
+        ax=ax,
+        cbar_kws={"label": cbar_label},
+    )
+
+    ax.set_title(title, fontsize=14)
+    ax.set_xlabel("Triad Class", fontsize=12)
+    ax.set_ylabel("Model", fontsize=12)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_sp_overlay(
+    model_profiles: dict[str, ModelProfile],
+    title: str = "Significance Profiles Across Scales",
+    figsize: tuple[float, float] = (16, 6),
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Plot grouped bar chart of SP vectors, one color per model.
+
+    Args:
+        model_profiles: Dict mapping model_id to ModelProfile.
+        title: Plot title.
+        figsize: Figure size.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    sorted_models = sorted(
+        model_profiles.items(),
+        key=lambda kv: kv[1].model_spec.n_params,
+    )
+
+    indices = CONNECTED_TRIAD_INDICES
+    col_labels = [TRIAD_LABELS[i] for i in indices]
+    n_motifs = len(indices)
+    n_models = len(sorted_models)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    bar_width = 0.8 / n_models
+    x = np.arange(n_motifs)
+
+    for i, (model_id, mp) in enumerate(sorted_models):
+        sp_vals = mp.overall_mean_sp[indices]
+        color = MODEL_SCALE_COLORS.get(model_id, f"C{i}")
+        p = mp.model_spec.n_params
+        label = f"{p}M" if p < 1000 else f"{p // 1000}B"
+        offset = (i - n_models / 2 + 0.5) * bar_width
+        ax.bar(x + offset, sp_vals, bar_width, label=label, color=color,
+               edgecolor="black", linewidth=0.3)
+
+    ax.axhline(y=0, color="black", linewidth=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(col_labels, rotation=45, ha="right", fontsize=9)
+    ax.set_ylabel("Mean SP", fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.legend(fontsize=9, title="Model Size")
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_per_task_scaling(
+    model_profiles: dict[str, ModelProfile],
+    task_name: str,
+    motif_indices: list[int] | None = None,
+    title: str | None = None,
+    figsize: tuple[float, float] = (12, 6),
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Plot scaling curves for a specific task category.
+
+    Args:
+        model_profiles: Dict mapping model_id to ModelProfile.
+        task_name: Task category to plot.
+        motif_indices: Which motif indices to include.
+        title: Plot title. Defaults to "Scaling: {task_name}".
+        figsize: Figure size.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    from src.scale_comparison import compare_task_across_scales
+
+    if title is None:
+        title = f"Motif Scaling: {task_name}"
+
+    trends = compare_task_across_scales(model_profiles, task_name, metric="z_score")
+
+    if not trends:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, f"No data for task '{task_name}'",
+                ha="center", va="center", transform=ax.transAxes, fontsize=14)
+        ax.set_title(title)
+        return fig
+
+    return plot_scale_trend(
+        trends,
+        motif_indices=motif_indices,
+        title=title,
+        figsize=figsize,
+        save_path=save_path,
+    )
+
+
+def plot_scale_dendrogram(
+    linkage_matrix: np.ndarray,
+    model_names: list[str],
+    title: str = "Model Similarity Dendrogram",
+    figsize: tuple[float, float] = (10, 6),
+    save_path: str | Path | None = None,
+) -> plt.Figure:
+    """Plot a dendrogram of model similarity based on motif profiles.
+
+    Reuses the visual style from plot_task_dendrogram.
+
+    Args:
+        linkage_matrix: Linkage matrix from scipy hierarchical clustering.
+        model_names: Ordered model names matching the linkage matrix.
+        title: Plot title.
+        figsize: Figure size.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+
+    dendrogram(
+        linkage_matrix,
+        labels=model_names,
+        ax=ax,
+        leaf_rotation=45,
+        leaf_font_size=10,
+        color_threshold=0,
+    )
+
+    ax.set_title(title, fontsize=14)
+    ax.set_ylabel("Cosine Distance", fontsize=12)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    return fig

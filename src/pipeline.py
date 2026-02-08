@@ -466,6 +466,280 @@ def _json_serializer(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
+# --- Multi-model / scale pipeline ---
+
+def discover_graphs_multi_model(
+    data_dir: str | Path,
+) -> dict[str, dict[str, list[Path]]]:
+    """Discover attribution graphs organized by model and task category.
+
+    Expects a directory layout like:
+        data_dir/{model_id}/{category}/*.json
+
+    Detects model-level subdirectories by checking for nested category
+    subdirectories (i.e., subdirs that themselves contain .json files).
+
+    Args:
+        data_dir: Path to the top-level data directory.
+
+    Returns:
+        Dict mapping model_id → {category_name → [json paths]}.
+    """
+    data_dir = Path(data_dir)
+    models: dict[str, dict[str, list[Path]]] = {}
+
+    for model_dir in sorted(data_dir.iterdir()):
+        if not model_dir.is_dir():
+            continue
+
+        # Check if this looks like a model directory (has subdirs with JSON)
+        categories: dict[str, list[Path]] = {}
+        for subdir in sorted(model_dir.iterdir()):
+            if not subdir.is_dir():
+                continue
+            json_files = sorted(subdir.glob("*.json"))
+            if json_files:
+                categories[subdir.name] = json_files
+
+        if categories:
+            models[model_dir.name] = categories
+
+    return models
+
+
+def run_scale_pipeline(
+    data_dir: str | Path = "data/raw",
+    results_dir: str | Path = "data/results/scale",
+    n_random: int = 1000,
+    motif_size: int = 3,
+    model_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run the motif analysis pipeline across multiple model scales.
+
+    Discovers model-specific subdirectories under data_dir, runs the
+    existing run_pipeline() for each model, then performs cross-scale
+    comparison.
+
+    Args:
+        data_dir: Path to data directory with model subdirectories.
+        results_dir: Path to output directory for scale results.
+        n_random: Number of null model random graphs per real graph.
+        motif_size: Motif size (3 or 4).
+        model_ids: Optional list of model IDs to analyze. If None, all
+            detected models are analyzed.
+
+    Returns:
+        Dict with keys: model_results, model_profiles, scale_comparison.
+    """
+    from src.models import get_model, ALL_MODELS
+    from src.scale_comparison import (
+        build_model_profile,
+        run_scale_comparison,
+        ModelProfile,
+    )
+
+    data_dir = Path(data_dir)
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Discover available models
+    all_model_graphs = discover_graphs_multi_model(data_dir)
+
+    if model_ids:
+        model_graph_subset = {
+            m: cats for m, cats in all_model_graphs.items() if m in model_ids
+        }
+    else:
+        model_graph_subset = all_model_graphs
+
+    if not model_graph_subset:
+        print("No model subdirectories found. Ensure data_dir has "
+              "{model_id}/{category}/*.json structure.")
+        return {}
+
+    print(f"Found {len(model_graph_subset)} model(s) to analyze:")
+    for model_id, cats in model_graph_subset.items():
+        total = sum(len(f) for f in cats.values())
+        print(f"  {model_id}: {total} graphs in {len(cats)} categories")
+    print()
+
+    # Phase 1: Run existing pipeline per model
+    model_results: dict[str, dict[str, Any]] = {}
+    for model_id, categories in model_graph_subset.items():
+        print("=" * 60)
+        print(f"Model: {model_id}")
+        print("=" * 60)
+
+        model_data_dir = data_dir / model_id
+        model_results_dir = results_dir / model_id
+        model_results_dir.mkdir(parents=True, exist_ok=True)
+
+        result = run_pipeline(
+            data_dir=model_data_dir,
+            results_dir=model_results_dir,
+            n_random=n_random,
+            motif_size=motif_size,
+        )
+        model_results[model_id] = result
+
+    # Phase 2: Build ModelProfiles
+    print("\n" + "=" * 60)
+    print("Phase 4: Cross-scale comparison")
+    print("=" * 60)
+
+    model_profiles: dict[str, ModelProfile] = {}
+    for model_id, result in model_results.items():
+        task_profiles = result.get("task_profiles", {})
+        if not task_profiles:
+            print(f"  Skipping {model_id}: no task profiles")
+            continue
+
+        # Look up model spec (or create a minimal one if not in registry)
+        if model_id in ALL_MODELS:
+            spec = get_model(model_id)
+        else:
+            from src.models import ModelSpec
+            print(f"  Warning: {model_id} not in model registry, using minimal spec")
+            spec = ModelSpec(
+                model_id=model_id,
+                family="unknown",
+                variant="unknown",
+                n_params=0,
+                n_layers=0,
+                hidden_dim=0,
+            )
+
+        mp = build_model_profile(spec, task_profiles)
+        model_profiles[model_id] = mp
+        print(f"  {model_id}: {mp.n_total_graphs} total graphs, "
+              f"{len(mp.task_profiles)} tasks")
+
+    if len(model_profiles) < 2:
+        print("\nNeed at least 2 models for cross-scale comparison.")
+        return {"model_results": model_results, "model_profiles": model_profiles}
+
+    # Phase 3: Scale comparison
+    scale_result = run_scale_comparison(model_profiles)
+
+    # Save results
+    profiles_path = results_dir / "scale_profiles.pkl"
+    with open(profiles_path, "wb") as f:
+        pickle.dump(model_profiles, f)
+    print(f"\nSaved model profiles to {profiles_path}")
+
+    # Save scale analysis summary as JSON
+    scale_summary = _build_scale_summary_json(scale_result)
+    summary_path = results_dir / "scale_analysis.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(scale_summary, f, indent=2, default=_json_serializer)
+    print(f"Saved scale analysis to {summary_path}")
+
+    print("\n" + "=" * 60)
+    print("Scale pipeline complete!")
+    print("=" * 60)
+
+    return {
+        "model_results": model_results,
+        "model_profiles": model_profiles,
+        "scale_comparison": scale_result,
+    }
+
+
+def _build_scale_summary_json(
+    scale_result: Any,
+) -> dict[str, Any]:
+    """Build a JSON-serializable summary of scale comparison results."""
+    summary: dict[str, Any] = {}
+
+    # Model overview
+    summary["models"] = {
+        model_id: {
+            "n_params": mp.model_spec.n_params,
+            "n_layers": mp.model_spec.n_layers,
+            "n_total_graphs": mp.n_total_graphs,
+            "n_tasks": len(mp.task_profiles),
+            "tasks": list(mp.task_profiles.keys()),
+        }
+        for model_id, mp in scale_result.model_profiles.items()
+    }
+
+    # Scale trends (Z-score based)
+    summary["scale_trends"] = [
+        {
+            "motif_index": t.motif_index,
+            "motif_label": t.motif_label,
+            "slope": t.slope,
+            "r_squared": t.r_squared,
+            "p_value": t.p_value,
+            "spearman_rho": t.spearman_rho,
+            "spearman_p": t.spearman_p,
+            "trend_direction": t.trend_direction,
+            "is_significant": t.is_significant,
+            "values": t.values,
+        }
+        for t in scale_result.scale_trends
+    ]
+
+    # Scale trends (SP-based — normalized, controls for graph size)
+    summary["sp_scale_trends"] = [
+        {
+            "motif_index": t.motif_index,
+            "motif_label": t.motif_label,
+            "slope": t.slope,
+            "r_squared": t.r_squared,
+            "p_value": t.p_value,
+            "spearman_rho": t.spearman_rho,
+            "spearman_p": t.spearman_p,
+            "trend_direction": t.trend_direction,
+            "is_significant": t.is_significant,
+            "values": t.values,
+        }
+        for t in scale_result.sp_scale_trends
+    ]
+
+    # Phase transitions (Z-score based)
+    summary["phase_transitions"] = [
+        {
+            "motif_index": pt.motif_index,
+            "motif_label": pt.motif_label,
+            "transition_point": pt.transition_point,
+            "before_mean": pt.before_mean,
+            "after_mean": pt.after_mean,
+            "effect_size": pt.effect_size,
+        }
+        for pt in scale_result.phase_transitions
+    ]
+
+    # Phase transitions (SP-based — normalized, controls for graph size)
+    summary["sp_phase_transitions"] = [
+        {
+            "motif_index": pt.motif_index,
+            "motif_label": pt.motif_label,
+            "transition_point": pt.transition_point,
+            "before_mean": pt.before_mean,
+            "after_mean": pt.after_mean,
+            "effect_size": pt.effect_size,
+        }
+        for pt in scale_result.sp_phase_transitions
+    ]
+
+    # FFL backbone
+    summary["ffl_backbone"] = {
+        "universal": scale_result.ffl_backbone_universal,
+        "details": scale_result.ffl_details,
+    }
+
+    # Similarity matrix
+    summary["similarity_matrix"] = {
+        "model_names": scale_result.model_names,
+        "matrix": scale_result.similarity_matrix.tolist()
+        if hasattr(scale_result.similarity_matrix, "tolist")
+        else [],
+    }
+
+    return summary
+
+
 # --- CLI entry point ---
 
 if __name__ == "__main__":
@@ -488,11 +762,31 @@ if __name__ == "__main__":
         "--motif-size", type=int, default=3,
         help="Motif size (3 or 4)",
     )
+    parser.add_argument(
+        "--scale-mode", action="store_true",
+        help="Run cross-scale pipeline (expects model subdirectories in data-dir)",
+    )
+    parser.add_argument(
+        "--models", type=str, nargs="*", default=None,
+        help="Model IDs to analyze in scale mode (default: all detected)",
+    )
     args = parser.parse_args()
 
-    run_pipeline(
-        data_dir=args.data_dir,
-        results_dir=args.results_dir,
-        n_random=args.n_random,
-        motif_size=args.motif_size,
-    )
+    if args.scale_mode:
+        scale_results_dir = args.results_dir
+        if not scale_results_dir.endswith("/scale") and not scale_results_dir.endswith("\\scale"):
+            scale_results_dir = str(Path(args.results_dir) / "scale")
+        run_scale_pipeline(
+            data_dir=args.data_dir,
+            results_dir=scale_results_dir,
+            n_random=args.n_random,
+            motif_size=args.motif_size,
+            model_ids=args.models,
+        )
+    else:
+        run_pipeline(
+            data_dir=args.data_dir,
+            results_dir=args.results_dir,
+            n_random=args.n_random,
+            motif_size=args.motif_size,
+        )

@@ -152,6 +152,27 @@ class NeuronpediaClient:
         rate_limit_delay: Seconds to wait between requests.
     """
 
+    # Models that support on-demand graph generation via the Neuronpedia API.
+    # Other models (e.g., Gemma 3 270M/1B/12B/27B) require local GPU tracing.
+    API_SUPPORTED_MODELS: set[str] = {"gemma-2-2b", "qwen3-4b", "gemma-3-4b-it"}
+
+    # Source set names required by models without a Neuronpedia default.
+    API_SOURCE_SETS: dict[str, str] = {
+        "gemma-3-4b-it": "gemmascope-2-transcoder-16k",
+    }
+
+    @classmethod
+    def is_api_supported(cls, model_id: str) -> bool:
+        """Check if a model supports on-demand graph generation via the API.
+
+        Args:
+            model_id: Model identifier to check.
+
+        Returns:
+            True if the model can generate graphs through Neuronpedia's API.
+        """
+        return model_id in cls.API_SUPPORTED_MODELS
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -413,6 +434,7 @@ class NeuronpediaClient:
         prompt: str,
         model_id: str = "gemma-2-2b",
         slug: str | None = None,
+        source_set_name: str | None = None,
         node_threshold: float = 0.8,
         edge_threshold: float = 0.85,
         max_n_logits: int = 10,
@@ -422,12 +444,17 @@ class NeuronpediaClient:
         """Generate a new attribution graph via Neuronpedia's API.
 
         This runs circuit-tracing on Neuronpedia's GPU servers. No local GPU needed.
-        Supported models: gemma-2-2b, qwen3-4b, gemma-3-4b-it.
+        Supported models (via API): gemma-2-2b, qwen3-4b, gemma-3-4b-it.
+        For other Gemma 3 sizes (270M, 1B, 12B, 27B), use local GPU tracing
+        with GemmaScope 2 transcoders from HuggingFace.
 
         Args:
             prompt: The prompt to trace (max 64 tokens).
             model_id: Model to use.
             slug: Optional slug for the graph. Auto-generated if not provided.
+            source_set_name: Transcoder source set name. Required for models
+                without a default (e.g., "gemmascope-2-transcoder-16k" for
+                gemma-3-4b-it). If None, the API uses the model's default.
             node_threshold: Node pruning threshold (0.5-1.0).
             edge_threshold: Edge pruning threshold (0.8-1.0).
             max_n_logits: Max number of output logits to include (5-15).
@@ -450,6 +477,8 @@ class NeuronpediaClient:
             "desiredLogitProb": desired_logit_prob,
             "maxFeatureNodes": max_feature_nodes,
         }
+        if source_set_name:
+            payload["sourceSetName"] = source_set_name
         url = f"{NEURONPEDIA_API_URL}/graph/generate"
         return self._post(url, payload)
 
