@@ -139,7 +139,8 @@ def generate_graph_local(
     # (create_graph_files expects a file path, not a Graph object)
     pt_path = output_path / f"{slug}.pt"
     print(f"  Saving dense graph to {pt_path}...")
-    graph.to("cpu").to_pt(str(pt_path))
+    graph.to("cpu")
+    graph.to_pt(str(pt_path))
 
     # Free GPU memory
     del graph
