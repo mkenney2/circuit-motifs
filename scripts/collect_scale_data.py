@@ -133,7 +133,12 @@ def generate_graph_local(
     import tempfile
 
     print(f"  Attributing: {prompt[:60]}...")
-    graph = attribute(prompt=prompt, model=model, verbose=True)
+    # Cap feature nodes at 40K to avoid INT_MAX overflow in pruning
+    # (adjacency matrix is n² elements; 40K² = 1.6B < INT_MAX = 2.15B)
+    graph = attribute(
+        prompt=prompt, model=model, verbose=True,
+        max_feature_nodes=40000,
+    )
 
     # Save as .pt first, then convert to JSON via create_graph_files
     # (create_graph_files expects a file path, not a Graph object)
