@@ -130,21 +130,33 @@ def generate_graph_local(
             "Install with: pip install git+https://github.com/safety-research/circuit-tracer.git"
         )
 
+    import tempfile
+
     print(f"  Attributing: {prompt[:60]}...")
     graph = attribute(prompt=prompt, model=model, verbose=True)
 
-    # Move graph to CPU before pruning to avoid GPU OOM on dense adjacency
-    print(f"  Moving graph to CPU for pruning...")
-    graph = graph.to("cpu")
+    # Save as .pt first, then convert to JSON via create_graph_files
+    # (create_graph_files expects a file path, not a Graph object)
+    pt_path = output_path / f"{slug}.pt"
+    print(f"  Saving dense graph to {pt_path}...")
+    graph.to("cpu").to_pt(str(pt_path))
 
-    print(f"  Pruning and saving (node={node_threshold}, edge={edge_threshold})...")
+    # Free GPU memory
+    del graph
+    import torch
+    torch.cuda.empty_cache()
+
+    print(f"  Pruning and saving JSON (node={node_threshold}, edge={edge_threshold})...")
     create_graph_files(
-        graph,
+        str(pt_path),
         slug=slug,
         output_path=str(output_path),
         node_threshold=node_threshold,
         edge_threshold=edge_threshold,
     )
+
+    # Clean up the .pt file
+    pt_path.unlink(missing_ok=True)
 
     return output_path / f"{slug}.json"
 
