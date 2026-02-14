@@ -1,7 +1,10 @@
 """Null model generation and Z-score computation for motif analysis.
 
-Implements degree-preserving edge rewiring (configuration model) and
-Erdos-Renyi random graphs as null models for motif enrichment testing.
+Implements four null models for motif enrichment testing:
+  1. Configuration model (degree-preserving rewiring)
+  2. Erdos-Renyi random graphs
+  3. Layer-pair ER (preserves edge count per layer pair)
+  4. Layer-pair configuration (preserves degree sequence per layer pair)
 """
 
 from __future__ import annotations
@@ -27,7 +30,8 @@ class NullModelResult:
         mean_null: Mean counts across null ensemble per class.
         std_null: Standard deviation across null ensemble per class.
         n_random: Number of random graphs in the null ensemble.
-        null_type: Type of null model ("configuration" or "erdos_renyi").
+        null_type: Type of null model ("configuration", "erdos_renyi",
+            "layer_preserving", or "layer_pair_config").
     """
     real_counts: np.ndarray
     null_counts: np.ndarray
@@ -150,6 +154,276 @@ def generate_erdos_renyi_null(
         n_random=n_random,
         null_type="erdos_renyi",
     )
+
+
+def generate_layer_preserving_null(
+    graph: ig.Graph,
+    n_random: int = 1000,
+    motif_size: int = 3,
+    show_progress: bool = True,
+) -> NullModelResult:
+    """Generate a layer-pair-preserving null ensemble and compute Z-scores.
+
+    For each (source_layer, target_layer) pair in the real graph, generates
+    a random bipartite graph between the same node groups with the same
+    edge count, but randomized connectivity. This preserves:
+      - DAG structure (forward-only edges)
+      - Edge budget per layer pair (architectural skeleton)
+      - Total node and edge counts
+    While randomizing:
+      - Degree distribution within each layer pair
+      - Specific connectivity patterns (hubs, fan-in/fan-out structure)
+
+    This is the appropriate null for layered DAGs where degree-preserving
+    rewiring (configuration model) produces identical motif counts because
+    the degree sequence fully determines the triad census.
+
+    Requires that graph vertices have a 'layer' attribute (set by
+    graph_loader.load_attribution_graph).
+
+    Args:
+        graph: The real directed igraph.Graph with layer attributes.
+        n_random: Number of random graphs to generate.
+        motif_size: Motif size (3 or 4).
+        show_progress: Whether to show a progress bar.
+
+    Returns:
+        NullModelResult with Z-scores and significance profile.
+    """
+    from src.unrolled_motifs import get_effective_layer
+    from collections import defaultdict
+
+    # Compute real motif counts
+    real_result = compute_motif_census(graph, size=motif_size)
+    real_counts = real_result.as_array()
+
+    n_nodes = graph.vcount()
+
+    # Precompute layer assignments and edge budget per layer pair
+    layers = [get_effective_layer(graph, v.index) for v in graph.vs]
+    nodes_by_layer: dict[int, list[int]] = defaultdict(list)
+    for v_idx, layer in enumerate(layers):
+        nodes_by_layer[layer].append(v_idx)
+
+    # Count edges per (src_layer, tgt_layer) pair
+    layer_pair_edges: dict[tuple[int, int], int] = defaultdict(int)
+    for e in graph.es:
+        src_l = layers[e.source]
+        tgt_l = layers[e.target]
+        layer_pair_edges[(src_l, tgt_l)] += 1
+
+    # Generate null ensemble
+    null_counts_list: list[np.ndarray] = []
+    iterator = range(n_random)
+    if show_progress:
+        iterator = tqdm(iterator, desc="Layer-pair null", unit="graph")
+
+    for i in iterator:
+        rng = np.random.default_rng(seed=i)
+        g_random = ig.Graph(n=n_nodes, directed=True)
+
+        # Copy vertex attributes (needed for motif census to work)
+        for attr in graph.vs.attributes():
+            g_random.vs[attr] = graph.vs[attr]
+
+        # For each layer pair, generate random bipartite edges
+        for (src_l, tgt_l), n_edges in layer_pair_edges.items():
+            src_nodes = nodes_by_layer[src_l]
+            tgt_nodes = nodes_by_layer[tgt_l]
+
+            n_src = len(src_nodes)
+            n_tgt = len(tgt_nodes)
+            max_possible = n_src * n_tgt
+
+            if n_edges >= max_possible:
+                # Complete bipartite — add all edges
+                edges = [(s, t) for s in src_nodes for t in tgt_nodes]
+            else:
+                # Sample random edges without replacement
+                # Encode each possible edge as a single integer for efficiency
+                edge_indices = rng.choice(max_possible, size=n_edges, replace=False)
+                edges = [
+                    (src_nodes[idx // n_tgt], tgt_nodes[idx % n_tgt])
+                    for idx in edge_indices
+                ]
+
+            g_random.add_edges(edges)
+
+        null_result = compute_motif_census(g_random, size=motif_size)
+        null_counts_list.append(null_result.as_array())
+
+    null_counts = np.array(null_counts_list)
+
+    # Compute Z-scores
+    z_scores, mean_null, std_null = _compute_z_scores(real_counts, null_counts)
+
+    # Compute significance profile
+    sp = _compute_significance_profile(z_scores)
+
+    return NullModelResult(
+        real_counts=real_counts,
+        null_counts=null_counts,
+        z_scores=z_scores,
+        significance_profile=sp,
+        mean_null=mean_null,
+        std_null=std_null,
+        n_random=n_random,
+        null_type="layer_preserving",
+    )
+
+
+def generate_layer_pair_config_null(
+    graph: ig.Graph,
+    n_random: int = 1000,
+    motif_size: int = 3,
+    rewire_factor: int = 10,
+    show_progress: bool = True,
+) -> NullModelResult:
+    """Generate a layer-pair configuration null ensemble and compute Z-scores.
+
+    Preserves BOTH the edge count per (source_layer, target_layer) pair AND
+    the degree sequence within each pair. This is the strictest null model
+    for layered DAGs: it controls for the architectural skeleton (which layers
+    connect) and for hub structure (degree heterogeneity), while randomizing
+    which specific nodes connect.
+
+    Algorithm: for each layer pair, perform bipartite degree-preserving
+    edge swaps. Pick two random edges (s1->t1, s2->t2), require s1!=s2
+    and t1!=t2 and that (s1->t2) and (s2->t1) don't already exist, then
+    swap. Repeat n_edges * rewire_factor attempts per pair.
+
+    Requires that graph vertices have a 'layer' attribute.
+
+    Args:
+        graph: The real directed igraph.Graph with layer attributes.
+        n_random: Number of random graphs to generate.
+        motif_size: Motif size (3 or 4).
+        rewire_factor: Multiplier for edge count to determine swap attempts.
+        show_progress: Whether to show a progress bar.
+
+    Returns:
+        NullModelResult with Z-scores, significance profile, and
+        acceptance_rate metadata.
+    """
+    from src.unrolled_motifs import get_effective_layer
+    from collections import defaultdict
+
+    # Compute real motif counts
+    real_result = compute_motif_census(graph, size=motif_size)
+    real_counts = real_result.as_array()
+
+    n_nodes = graph.vcount()
+
+    # Precompute layer assignments and nodes per layer
+    layers = [get_effective_layer(graph, v.index) for v in graph.vs]
+    nodes_by_layer: dict[int, list[int]] = defaultdict(list)
+    for v_idx, layer in enumerate(layers):
+        nodes_by_layer[layer].append(v_idx)
+
+    # Group edges by (src_layer, tgt_layer) pair
+    layer_pair_edges: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+    for e in graph.es:
+        src_l = layers[e.source]
+        tgt_l = layers[e.target]
+        layer_pair_edges[(src_l, tgt_l)].append((e.source, e.target))
+
+    # Generate null ensemble
+    null_counts_list: list[np.ndarray] = []
+    total_accepted = 0
+    total_attempted = 0
+
+    iterator = range(n_random)
+    if show_progress:
+        iterator = tqdm(iterator, desc="Layer-pair config null", unit="graph")
+
+    for i in iterator:
+        rng = np.random.default_rng(seed=i)
+        g_random = ig.Graph(n=n_nodes, directed=True)
+
+        # Copy vertex attributes
+        for attr in graph.vs.attributes():
+            g_random.vs[attr] = graph.vs[attr]
+
+        graph_accepted = 0
+        graph_attempted = 0
+
+        # For each layer pair, rewire edges preserving degree sequence
+        for (src_l, tgt_l), edges in layer_pair_edges.items():
+            n_pair_edges = len(edges)
+            if n_pair_edges < 2:
+                # Can't rewire with fewer than 2 edges
+                g_random.add_edges(edges)
+                continue
+
+            # Work with a mutable copy of edges for this pair
+            current_edges = list(edges)
+            # Build edge set for O(1) existence checks
+            edge_set = set(current_edges)
+
+            n_attempts = max(n_pair_edges * rewire_factor, 1)
+            pair_accepted = 0
+
+            for _ in range(n_attempts):
+                # Pick two random edge indices
+                idx1, idx2 = rng.choice(n_pair_edges, size=2, replace=False)
+                s1, t1 = current_edges[idx1]
+                s2, t2 = current_edges[idx2]
+
+                # Require distinct sources and targets (otherwise no real swap)
+                if s1 == s2 or t1 == t2:
+                    continue
+
+                # Check that swapped edges don't already exist
+                new_e1 = (s1, t2)
+                new_e2 = (s2, t1)
+                if new_e1 in edge_set or new_e2 in edge_set:
+                    continue
+
+                # Perform swap
+                edge_set.discard((s1, t1))
+                edge_set.discard((s2, t2))
+                edge_set.add(new_e1)
+                edge_set.add(new_e2)
+                current_edges[idx1] = new_e1
+                current_edges[idx2] = new_e2
+                pair_accepted += 1
+
+            graph_accepted += pair_accepted
+            graph_attempted += n_attempts
+            g_random.add_edges(current_edges)
+
+        total_accepted += graph_accepted
+        total_attempted += graph_attempted
+
+        null_result = compute_motif_census(g_random, size=motif_size)
+        null_counts_list.append(null_result.as_array())
+
+    null_counts = np.array(null_counts_list)
+
+    # Compute Z-scores
+    z_scores, mean_null, std_null = _compute_z_scores(real_counts, null_counts)
+
+    # Compute significance profile
+    sp = _compute_significance_profile(z_scores)
+
+    result = NullModelResult(
+        real_counts=real_counts,
+        null_counts=null_counts,
+        z_scores=z_scores,
+        significance_profile=sp,
+        mean_null=mean_null,
+        std_null=std_null,
+        n_random=n_random,
+        null_type="layer_pair_config",
+    )
+
+    # Attach acceptance rate as extra attribute
+    if total_attempted > 0:
+        result.acceptance_rate = total_accepted / total_attempted
+    else:
+        result.acceptance_rate = 0.0
+
+    return result
 
 
 def _compute_z_scores(
