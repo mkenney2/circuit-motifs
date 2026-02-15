@@ -41,7 +41,7 @@ sys.path.insert(0, str(_REPO))
 from src.pipeline import discover_graphs
 from src.graph_loader import load_attribution_graph
 from src.unrolled_motifs import build_catalog, get_effective_layer
-from src.unrolled_census import run_unrolled_census, unrolled_census_counts
+from src.unrolled_census import run_unrolled_census, unrolled_census_counts, fast_unrolled_counts
 
 # ── Defaults ───────────────────────────────────────────────────────────
 DEFAULT_N_RANDOM = 100
@@ -389,18 +389,20 @@ def print_summary(results: dict, template_names: list[str]) -> None:
 def _worker(args: tuple) -> dict[str, int]:
     """Generate one null graph and run unrolled census on it.
 
+    Uses fast_unrolled_counts (direct adjacency counting) instead of VF2
+    subgraph isomorphism to avoid OOM on dense graphs.
+
     Args:
         args: (graph, null_type, seed, templates)
 
     Returns:
         Dict mapping motif name to instance count.
     """
-    graph, null_type, seed, templates = args
+    graph, null_type, seed, _templates = args
     rng = np.random.default_rng(seed=seed)
     gen_fn = GENERATORS[null_type]
     g_null = gen_fn(graph, rng)
-    census = run_unrolled_census(g_null, templates)
-    return unrolled_census_counts(census)
+    return fast_unrolled_counts(g_null)
 
 
 # ── Z-score computation ───────────────────────────────────────────────
@@ -414,9 +416,8 @@ def compute_unrolled_zscores(
 ) -> tuple[dict, dict, dict, dict]:
     """Compute unrolled motif z-scores with parallel null iterations."""
 
-    # Real census (single, sequential)
-    real_census = run_unrolled_census(graph, templates)
-    real_counts = unrolled_census_counts(real_census)
+    # Real census (single, sequential) — uses fast adjacency counting
+    real_counts = fast_unrolled_counts(graph)
 
     # Null ensemble — parallel
     null_counts: dict[str, list[int]] = {t.name: [] for t in templates}

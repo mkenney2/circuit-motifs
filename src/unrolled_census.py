@@ -7,6 +7,7 @@ sign-aware, layer-aware analogue of motif_census.py's instance finding.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -299,3 +300,167 @@ def unrolled_census_summary(
         }
 
     return summary
+
+
+def fast_unrolled_counts(
+    graph: ig.Graph,
+    max_layer_gap: int = 5,
+    min_layer_gap: int = 1,
+) -> dict[str, int]:
+    """Count unrolled motif instances using direct adjacency lookups.
+
+    Orders of magnitude faster than VF2 for large/dense graphs because it
+    avoids enumerating all subgraph isomorphisms.  Uses O(V*D) memory
+    instead of O(instances) which can be millions for dense graphs.
+
+    Args:
+        graph: A directed igraph.Graph with layer, sign, weight attributes.
+        max_layer_gap: Maximum layer gap per edge (default 5).
+        min_layer_gap: Minimum layer gap per edge (default 1).
+
+    Returns:
+        Dict mapping template name to instance count.
+    """
+    V = graph.vcount()
+    if V == 0 or graph.ecount() == 0:
+        return {
+            "cross_chain_inhibition": 0,
+            "feedforward_damping": 0,
+            "feedforward_amplification": 0,
+            "residual_self_loop_positive": 0,
+            "residual_self_loop_negative": 0,
+            "coherent_ffl": 0,
+            "incoherent_ffl": 0,
+            "cross_chain_toggle": 0,
+        }
+
+    # Precompute effective layers
+    layers = [get_effective_layer(graph, v) for v in range(V)]
+    has_sign = "sign" in graph.es.attributes() if graph.ecount() > 0 else False
+
+    # Build adjacency sets filtered by sign and layer gap.
+    # Only edges with min_layer_gap <= gap <= max_layer_gap are included.
+    exc_succ: dict[int, set[int]] = defaultdict(set)
+    inh_succ: dict[int, set[int]] = defaultdict(set)
+    exc_pred: dict[int, set[int]] = defaultdict(set)
+    inh_pred: dict[int, set[int]] = defaultdict(set)
+
+    for e in graph.es:
+        s, t = e.source, e.target
+        gap = layers[t] - layers[s]
+        if gap < min_layer_gap or gap > max_layer_gap:
+            continue
+        sign = e["sign"] if has_sign else "excitatory"
+        if sign == "excitatory":
+            exc_succ[s].add(t)
+            exc_pred[t].add(s)
+        else:
+            inh_succ[s].add(t)
+            inh_pred[t].add(s)
+
+    counts: dict[str, int] = {}
+
+    # ── 2-node templates ──────────────────────────────────────────────
+    # residual_self_loop_positive: A→B(+), forward layer ordering
+    counts["residual_self_loop_positive"] = sum(
+        len(targets) for targets in exc_succ.values()
+    )
+    # residual_self_loop_negative: A→B(-), forward layer ordering
+    counts["residual_self_loop_negative"] = sum(
+        len(targets) for targets in inh_succ.values()
+    )
+
+    # ── 3-node chain templates ────────────────────────────────────────
+    # feedforward_damping: A→B(+), B→C(-), layers A < B < C
+    # All nodes distinct (guaranteed by gap ≥ 1 → strict layer ordering)
+    count_damp = 0
+    for b in range(V):
+        count_damp += len(exc_pred[b]) * len(inh_succ[b])
+    counts["feedforward_damping"] = count_damp
+
+    # feedforward_amplification: A→B(+), B→C(+), layers A < B < C
+    count_amp = 0
+    for b in range(V):
+        count_amp += len(exc_pred[b]) * len(exc_succ[b])
+    counts["feedforward_amplification"] = count_amp
+
+    # ── 3-node triangle templates (FFLs) ──────────────────────────────
+    # coherent_ffl: A→B(+), B→C(+), A→C(+), layers A < B < C
+    # A→C edge gap already enforced by adjacency structure.
+    count_cffl = 0
+    for b in range(V):
+        for a in exc_pred[b]:
+            a_exc = exc_succ[a]
+            for c in exc_succ[b]:
+                if c in a_exc:
+                    count_cffl += 1
+    counts["coherent_ffl"] = count_cffl
+
+    # incoherent_ffl: A→B(+), B→C(+), A→C(-), layers A < B < C
+    count_iffl = 0
+    for b in range(V):
+        for a in exc_pred[b]:
+            a_inh = inh_succ[a]
+            for c in exc_succ[b]:
+                if c in a_inh:
+                    count_iffl += 1
+    counts["incoherent_ffl"] = count_iffl
+
+    # ── 4-node template ───────────────────────────────────────────────
+    # cross_chain_inhibition:
+    #   A_e→A_l(+), B_e→B_l(+), A_e→B_l(-), B_e→A_l(-)
+    #   All 4 nodes distinct.  Z2 symmetry (swap chains) handled by
+    #   iterating ordered pairs (a_e < b_e) — each instance counted once.
+    count_xci = 0
+    for a_e in range(V):
+        a_exc = exc_succ[a_e]
+        a_inh = inh_succ[a_e]
+        if not a_exc or not a_inh:
+            continue
+        for b_e in range(a_e + 1, V):
+            b_exc = exc_succ[b_e]
+            b_inh = inh_succ[b_e]
+            if not b_exc or not b_inh:
+                continue
+            # A_l: excitatory from A_e AND inhibitory from B_e
+            a_l_cands = (a_exc & b_inh) - {a_e, b_e}
+            # B_l: excitatory from B_e AND inhibitory from A_e
+            b_l_cands = (b_exc & a_inh) - {a_e, b_e}
+            if not a_l_cands or not b_l_cands:
+                continue
+            # Subtract diagonal (A_l == B_l)
+            overlap = len(a_l_cands & b_l_cands)
+            count_xci += len(a_l_cands) * len(b_l_cands) - overlap
+    counts["cross_chain_inhibition"] = count_xci
+
+    # ── 5-node template ───────────────────────────────────────────────
+    # cross_chain_toggle:
+    #   Bias→A_m(+), Bias→B_m(+), A_m→B_l(-), B_m→A_l(-)
+    #   All 5 nodes distinct.  Z2 symmetry (swap A/B chains) handled by
+    #   iterating ordered pairs (a_m < b_m index in targets list).
+    count_xct = 0
+    for bias in range(V):
+        targets = list(exc_succ[bias])
+        k = len(targets)
+        if k < 2:
+            continue
+        for i in range(k):
+            a_m = targets[i]
+            a_m_inh = inh_succ[a_m]  # B_l candidates
+            if not a_m_inh:
+                continue
+            for j in range(i + 1, k):
+                b_m = targets[j]
+                b_m_inh = inh_succ[b_m]  # A_l candidates
+                if not b_m_inh:
+                    continue
+                excluded = {bias, a_m, b_m}
+                b_l_cands = a_m_inh - excluded
+                a_l_cands = b_m_inh - excluded
+                if not a_l_cands or not b_l_cands:
+                    continue
+                overlap = len(a_l_cands & b_l_cands)
+                count_xct += len(a_l_cands) * len(b_l_cands) - overlap
+    counts["cross_chain_toggle"] = count_xct
+
+    return counts
