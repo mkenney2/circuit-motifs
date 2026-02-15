@@ -47,6 +47,12 @@ from src.unrolled_census import run_unrolled_census, unrolled_census_counts
 DEFAULT_N_RANDOM = 100
 DEFAULT_DATA_DIR = str(_REPO / "data" / "raw")
 
+# Original 9 Haiku task categories (exclude cross_model, gemma-2-2b, qwen3-4b)
+HAIKU_CATEGORIES = {
+    "arithmetic", "code", "creative", "factual_recall", "multihop",
+    "multilingual", "reasoning", "safety", "uncategorized",
+}
+
 # 20 smallest Haiku graphs by node count
 TARGET_NAMES = [
     "factual_recall/iasg-clt-18l-p70",               #  24 nodes,   82 edges
@@ -490,10 +496,12 @@ def main():
     data_dir = args.data_dir
     output_dir = args.output_dir or str(_REPO / "data" / "results" / "unrolled_null_pilot")
 
-    # Discover all graphs and sort by node count (smallest first)
+    # Discover Haiku graphs only, sort by node count (smallest first)
     categories = discover_graphs(data_dir)
     name_to_path: dict[str, Path] = {}
     for cat, paths in categories.items():
+        if cat not in HAIKU_CATEGORIES:
+            continue
         for p in paths:
             name_to_path[f"{cat}/{p.stem}"] = p
 
