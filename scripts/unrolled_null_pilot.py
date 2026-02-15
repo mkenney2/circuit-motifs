@@ -476,12 +476,12 @@ def main():
         help="Directory to save results. Default: data/results/unrolled_null_pilot/",
     )
     parser.add_argument(
-        "--n-graphs", type=int, default=len(TARGET_NAMES),
-        help=f"Number of smallest graphs to use (max {len(TARGET_NAMES)}). Default: all {len(TARGET_NAMES)}",
+        "--n-graphs", type=int, default=0,
+        help="Number of graphs to run (after skipping). 0 = all remaining. Default: 0",
     )
     parser.add_argument(
         "--skip-graphs", type=int, default=0,
-        help="Skip the first N graphs. Useful for resuming. Default: 0",
+        help="Skip the first N smallest graphs. Useful for splitting work. Default: 0",
     )
     args = parser.parse_args()
 
@@ -489,21 +489,39 @@ def main():
     n_workers = args.n_workers
     data_dir = args.data_dir
     output_dir = args.output_dir or str(_REPO / "data" / "results" / "unrolled_null_pilot")
-    n_graphs = min(args.n_graphs, len(TARGET_NAMES))
-    target_names = TARGET_NAMES[args.skip_graphs:n_graphs]
 
-    effective_workers = os.cpu_count() if n_workers == -1 else n_workers
-    print(f"Config: {n_random} null iterations, {effective_workers} workers, "
-          f"{n_graphs} graphs, {len(NULL_TYPES)} null types", flush=True)
-    print(f"Data:   {data_dir}", flush=True)
-    print(f"Null types: {', '.join(NULL_SHORT[nt] for nt in NULL_TYPES)}", flush=True)
-
-    # Discover graphs
+    # Discover all graphs and sort by node count (smallest first)
     categories = discover_graphs(data_dir)
     name_to_path: dict[str, Path] = {}
     for cat, paths in categories.items():
         for p in paths:
             name_to_path[f"{cat}/{p.stem}"] = p
+
+    print(f"Discovered {len(name_to_path)} graphs, loading sizes...", flush=True)
+    graph_sizes = []
+    for gname, gpath in name_to_path.items():
+        g = load_attribution_graph(gpath)
+        graph_sizes.append((gname, g.vcount(), g.ecount()))
+    graph_sizes.sort(key=lambda x: (x[1], x[2]))
+    all_names = [gs[0] for gs in graph_sizes]
+
+    # Apply skip and n-graphs
+    all_names = all_names[args.skip_graphs:]
+    if args.n_graphs > 0:
+        all_names = all_names[:args.n_graphs]
+    target_names = all_names
+
+    effective_workers = os.cpu_count() if n_workers == -1 else n_workers
+    print(f"Config: {n_random} null iterations, {effective_workers} workers, "
+          f"{len(target_names)} graphs (skip {args.skip_graphs}), "
+          f"{len(NULL_TYPES)} null types", flush=True)
+    print(f"Data:   {data_dir}", flush=True)
+    print(f"Null types: {', '.join(NULL_SHORT[nt] for nt in NULL_TYPES)}", flush=True)
+    if target_names:
+        gs_first = next(gs for gs in graph_sizes if gs[0] == target_names[0])
+        gs_last = next(gs for gs in graph_sizes if gs[0] == target_names[-1])
+        print(f"Range:  {target_names[0]} ({gs_first[1]}n) → "
+              f"{target_names[-1]} ({gs_last[1]}n)", flush=True)
 
     templates = build_catalog()
     template_names = [t.name for t in templates]
