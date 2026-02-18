@@ -95,9 +95,9 @@ def compute_all_attributions(
 ) -> list[dict]:
     """Compute activation × gradient attributions between selected neurons.
 
-    For each source neuron, computes the attribution to each target neuron in
-    downstream layers (within max_layer_gap). Uses backward passes per
-    (source_layer, target_layer) pair for efficiency.
+    For each target layer, runs one forward pass with hooks that keep the
+    computation graph alive, then backward passes per target neuron to get
+    gradients at all relevant source layers simultaneously.
 
     Args:
         model: A TransformerLens HookedTransformer.
@@ -111,61 +111,74 @@ def compute_all_attributions(
     import torch
 
     n_layers = model.cfg.n_layers
-    edges: list[dict] = []
 
     # Collect all attribution magnitudes for thresholding
     all_attrs: list[float] = []
     raw_edges: list[dict] = []
 
-    # Process each target layer: one forward+backward per (target_layer, target_neuron)
-    # Optimized: batch by source_layer → target_layer pairs
-    for src_layer in range(n_layers):
-        src_neurons = top_neurons.get(src_layer, [])
-        if not src_neurons:
+    # Process one target layer at a time to bound memory usage.
+    # Each iteration: one forward pass + K backward passes (K = target neurons).
+    for tgt_layer in range(1, n_layers):
+        tgt_neurons = top_neurons.get(tgt_layer, [])
+        if not tgt_neurons:
             continue
 
-        max_tgt = min(src_layer + config.max_layer_gap, n_layers - 1)
-        for tgt_layer in range(src_layer + 1, max_tgt + 1):
-            tgt_neurons = top_neurons.get(tgt_layer, [])
-            if not tgt_neurons:
-                continue
+        # Source layers within max_layer_gap
+        min_src = max(0, tgt_layer - config.max_layer_gap)
+        src_layers = [l for l in range(min_src, tgt_layer)
+                      if top_neurons.get(l)]
+        if not src_layers:
+            continue
 
-            # Forward pass with grad tracking on source MLP post-activation
-            src_hook = f"blocks.{src_layer}.mlp.hook_post"
-            tgt_hook = f"blocks.{tgt_layer}.mlp.hook_post"
+        # Capture activations via hooks that preserve the computation graph
+        activations: dict[int, Any] = {}
 
-            hook_names = [src_hook, tgt_hook]
-            _, cache = model.run_with_cache(tokens, names_filter=hook_names)
+        def _make_hook(layer_idx: int):
+            def hook_fn(tensor, hook):
+                tensor.retain_grad()
+                activations[layer_idx] = tensor
+                return tensor
+            return hook_fn
 
-            src_act_tensor = cache[src_hook]  # [1, seq, d_mlp]
-            src_act_tensor.requires_grad_(True)
-            src_act_tensor.retain_grad()
+        layers_to_hook = set(src_layers) | {tgt_layer}
+        fwd_hooks = [
+            (f"blocks.{l}.mlp.hook_post", _make_hook(l))
+            for l in layers_to_hook
+        ]
 
-            tgt_act_tensor = cache[tgt_hook]  # [1, seq, d_mlp]
+        # Forward pass — run_with_hooks keeps the computation graph alive
+        model.zero_grad()
+        with torch.enable_grad():
+            _ = model.run_with_hooks(tokens, fwd_hooks=fwd_hooks)
 
-            # For each target neuron, backward to get gradient w.r.t. source
-            for tgt_idx, tgt_act_val in tgt_neurons:
-                tgt_scalar = tgt_act_tensor[0, -1, tgt_idx]
+        tgt_act_tensor = activations[tgt_layer]  # [1, seq, d_mlp]
 
-                # Zero grads before backward
-                if src_act_tensor.grad is not None:
-                    src_act_tensor.grad.zero_()
+        # Backward per target neuron → gradients at all source layers
+        for ti, (tgt_idx, tgt_act_val) in enumerate(tgt_neurons):
+            tgt_scalar = tgt_act_tensor[0, -1, tgt_idx]
 
-                tgt_scalar.backward(retain_graph=True)
+            # Zero grads on all source activations
+            for sl in src_layers:
+                if activations[sl].grad is not None:
+                    activations[sl].grad.zero_()
 
-                if src_act_tensor.grad is None:
+            tgt_scalar.backward(retain_graph=True)
+
+            # Collect attributions from all source layers
+            for sl in src_layers:
+                src_act = activations[sl]
+                if src_act.grad is None:
                     continue
+                grad = src_act.grad[0, -1, :]  # [d_mlp]
 
-                # attribution = source_activation × gradient for each source neuron
-                grad = src_act_tensor.grad[0, -1, :]  # [d_mlp]
-
-                for src_idx, src_act_val in src_neurons:
-                    attr = float(src_act_val) * float(grad[src_idx].item())
+                for src_idx, src_act_val in top_neurons[sl]:
+                    g_val = grad[src_idx].item()
+                    attr = float(src_act_val) * float(g_val)
                     if attr == 0.0:
                         continue
 
                     raw_edges.append({
-                        "source_layer": src_layer,
+                        "source_layer": sl,
                         "source_neuron": src_idx,
                         "source_act": src_act_val,
                         "target_layer": tgt_layer,
@@ -175,9 +188,14 @@ def compute_all_attributions(
                     })
                     all_attrs.append(abs(attr))
 
-            # Free GPU memory
-            del cache
-            torch.cuda.empty_cache() if config.device == "cuda" else None
+        # Free computation graph for this target layer
+        del activations, tgt_act_tensor
+        if config.device == "cuda":
+            torch.cuda.empty_cache()
+
+        print(f"  target layer {tgt_layer}/{n_layers-1}: "
+              f"{len(tgt_neurons)} neurons, {len(raw_edges)} edges so far",
+              flush=True)
 
     # Threshold: keep top (100 - threshold_pct)% by |attribution|
     if all_attrs and config.threshold_pct > 0:
