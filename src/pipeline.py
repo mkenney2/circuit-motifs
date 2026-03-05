@@ -31,7 +31,13 @@ from src.motif_census import (
     MOTIF_FAN_OUT,
     MOTIF_CYCLE,
 )
-from src.null_model import generate_configuration_null, NullModelResult
+from src.null_model import (
+    generate_configuration_null,
+    generate_erdos_renyi_null,
+    generate_layer_preserving_null,
+    generate_layer_pair_config_null,
+    NullModelResult,
+)
 from src.comparison import (
     build_task_profile,
     all_pairwise_comparisons,
@@ -40,6 +46,13 @@ from src.comparison import (
     hierarchical_clustering,
     TaskProfile,
 )
+from src.unrolled_motifs import build_catalog, layer_stats
+from src.unrolled_census import (
+    run_unrolled_census,
+    unrolled_census_counts,
+    unrolled_census_summary,
+)
+from src.unrolled_null_model import compute_unrolled_zscores, UnrolledNullResult
 
 
 # --- Graph discovery ---
@@ -75,6 +88,7 @@ def analyze_single_graph(
     n_random: int = 1000,
     motif_size: int = 3,
     show_progress: bool = False,
+    null_type: str = "configuration",
 ) -> dict[str, Any]:
     """Run the full motif analysis pipeline on a single graph.
 
@@ -83,6 +97,8 @@ def analyze_single_graph(
         n_random: Number of null model random graphs.
         motif_size: Motif size (3 or 4).
         show_progress: Whether to show progress bar for null model.
+        null_type: Null model type — "configuration", "erdos_renyi",
+            "layer_preserving", or "layer_pair_config".
 
     Returns:
         Dict with keys: path, summary, census, null_result, motif_instances.
@@ -94,10 +110,26 @@ def analyze_single_graph(
     census = compute_motif_census(g, size=motif_size)
 
     # Null model + Z-scores
-    null_result = generate_configuration_null(
-        g, n_random=n_random, motif_size=motif_size,
-        show_progress=show_progress,
-    )
+    if null_type == "layer_pair_config":
+        null_result = generate_layer_pair_config_null(
+            g, n_random=n_random, motif_size=motif_size,
+            show_progress=show_progress,
+        )
+    elif null_type == "layer_preserving":
+        null_result = generate_layer_preserving_null(
+            g, n_random=n_random, motif_size=motif_size,
+            show_progress=show_progress,
+        )
+    elif null_type == "erdos_renyi":
+        null_result = generate_erdos_renyi_null(
+            g, n_random=n_random, motif_size=motif_size,
+            show_progress=show_progress,
+        )
+    else:
+        null_result = generate_configuration_null(
+            g, n_random=n_random, motif_size=motif_size,
+            show_progress=show_progress,
+        )
 
     # Get motif instance counts from census (already computed, no VF2 needed)
     raw = census.raw_counts
@@ -126,6 +158,7 @@ def run_pipeline(
     results_dir: str | Path = "data/results",
     n_random: int = 1000,
     motif_size: int = 3,
+    null_type: str = "configuration",
 ) -> dict[str, Any]:
     """Run the full analysis pipeline on all graphs.
 
@@ -134,6 +167,7 @@ def run_pipeline(
         results_dir: Path to output directory for results.
         n_random: Number of null model random graphs per real graph.
         motif_size: Motif size (3 or 4).
+        null_type: Null model type — "configuration" or "erdos_renyi".
 
     Returns:
         Dict with keys: per_graph, task_profiles, comparisons,
@@ -172,6 +206,7 @@ def run_pipeline(
                     n_random=n_random,
                     motif_size=motif_size,
                     show_progress=True,
+                    null_type=null_type,
                 )
                 per_graph[category].append(result)
 
@@ -466,6 +501,230 @@ def _json_serializer(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
+# --- Unrolled motif analysis ---
+
+def analyze_single_graph_unrolled(
+    json_path: Path,
+    n_random: int = 100,
+    weight_threshold: float = 0.0,
+    max_layer_gap: int = 5,
+    show_progress: bool = False,
+) -> dict[str, Any]:
+    """Run the unrolled motif analysis pipeline on a single graph.
+
+    Args:
+        json_path: Path to the JSON attribution graph.
+        n_random: Number of null model random graphs.
+        weight_threshold: Minimum absolute edge weight for motif matching.
+        max_layer_gap: Maximum layer gap per edge.
+        show_progress: Whether to show progress bar for null model.
+
+    Returns:
+        Dict with keys: path, name, layer_stats, census_summary, null_result,
+        top_instances.
+    """
+    g = load_attribution_graph(json_path)
+    summary = graph_summary(g)
+    lstats = layer_stats(g)
+
+    templates = build_catalog()
+
+    # Run census (no null model) to find instances
+    census = run_unrolled_census(
+        g, templates,
+        weight_threshold=weight_threshold,
+        max_layer_gap=max_layer_gap,
+    )
+    census_summ = unrolled_census_summary(census)
+    counts = unrolled_census_counts(census)
+
+    # Null model + Z-scores
+    null_result = compute_unrolled_zscores(
+        g, templates,
+        n_random=n_random,
+        weight_threshold=weight_threshold,
+        max_layer_gap=max_layer_gap,
+        show_progress=show_progress,
+    )
+
+    # Top instances per motif (keep top 10)
+    top_instances = {}
+    for name, instances in census.items():
+        top_instances[name] = instances[:10]
+
+    return {
+        "path": str(json_path),
+        "name": json_path.stem,
+        "summary": summary,
+        "layer_stats": lstats,
+        "census_summary": census_summ,
+        "counts": counts,
+        "null_result": null_result,
+        "top_instances": top_instances,
+    }
+
+
+def run_unrolled_pipeline(
+    data_dir: str | Path = "data/raw",
+    results_dir: str | Path = "data/results",
+    n_random: int = 100,
+    weight_threshold: float = 0.0,
+    max_layer_gap: int = 5,
+) -> dict[str, Any]:
+    """Run the unrolled motif analysis pipeline on all graphs.
+
+    Args:
+        data_dir: Path to data/raw/ directory.
+        results_dir: Path to output directory for results.
+        n_random: Number of null model random graphs per real graph.
+        weight_threshold: Minimum absolute edge weight for motif matching.
+        max_layer_gap: Maximum layer gap per edge.
+
+    Returns:
+        Dict with keys: per_graph, task_zscores.
+    """
+    data_dir = Path(data_dir)
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    categories = discover_graphs(data_dir)
+
+    total_graphs = sum(len(files) for files in categories.values())
+    print(f"Found {total_graphs} graphs in {len(categories)} categories")
+    print()
+
+    print("=" * 60)
+    print("Unrolled Motif Analysis")
+    print("=" * 60)
+
+    per_graph: dict[str, list[dict[str, Any]]] = {}
+    graph_count = 0
+
+    for category, files in categories.items():
+        per_graph[category] = []
+        for json_path in files:
+            graph_count += 1
+            print(f"\n[{graph_count}/{total_graphs}] {category}/{json_path.stem}")
+            t0 = time.time()
+
+            try:
+                result = analyze_single_graph_unrolled(
+                    json_path,
+                    n_random=n_random,
+                    weight_threshold=weight_threshold,
+                    max_layer_gap=max_layer_gap,
+                    show_progress=True,
+                )
+                per_graph[category].append(result)
+
+                # Print summary
+                counts = result["counts"]
+                zs = result["null_result"].z_scores
+                elapsed = time.time() - t0
+                count_str = ", ".join(
+                    f"{k}={v}" for k, v in sorted(counts.items()) if v > 0
+                )
+                if not count_str:
+                    count_str = "(no instances found)"
+                print(f"  Counts: {count_str}")
+
+                # Top Z-scores
+                top_z = sorted(zs.items(), key=lambda x: abs(x[1]), reverse=True)[:3]
+                z_str = ", ".join(f"{k}={v:+.1f}" for k, v in top_z)
+                print(f"  Top Z: {z_str}")
+                print(f"  Acceptance rate: {result['null_result'].acceptance_rate:.1%}")
+                print(f"  Completed in {elapsed:.1f}s")
+
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                continue
+
+    # Aggregate Z-scores by task
+    task_zscores: dict[str, dict[str, float]] = {}
+    for category, results_list in per_graph.items():
+        if not results_list:
+            continue
+        z_by_motif: dict[str, list[float]] = {}
+        for r in results_list:
+            for motif_name, z in r["null_result"].z_scores.items():
+                z_by_motif.setdefault(motif_name, []).append(z)
+        task_zscores[category] = {
+            m: float(np.mean(zs)) for m, zs in z_by_motif.items()
+        }
+
+    # Save results
+    unrolled_path = results_dir / "unrolled_results.pkl"
+    with open(unrolled_path, "wb") as f:
+        pickle.dump({"per_graph": per_graph, "task_zscores": task_zscores}, f)
+    print(f"\nSaved unrolled results to {unrolled_path}")
+
+    # Save JSON summary
+    unrolled_summary = _build_unrolled_summary_json(per_graph, task_zscores)
+    summary_path = results_dir / "unrolled_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(unrolled_summary, f, indent=2, default=_json_serializer)
+    print(f"Saved unrolled summary to {summary_path}")
+
+    print("\n" + "=" * 60)
+    print("Unrolled pipeline complete!")
+    print("=" * 60)
+
+    return {"per_graph": per_graph, "task_zscores": task_zscores}
+
+
+def _build_unrolled_summary_json(
+    per_graph: dict[str, list[dict]],
+    task_zscores: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    """Build JSON-serializable summary of unrolled analysis results."""
+    summary: dict[str, Any] = {}
+
+    # Per-graph summaries
+    graph_summaries = []
+    for category, results_list in per_graph.items():
+        for r in results_list:
+            gs = {
+                "category": category,
+                "name": r["name"],
+                "n_nodes": r["summary"]["n_nodes"],
+                "n_edges": r["summary"]["n_edges"],
+                "layer_stats": r["layer_stats"],
+                "counts": r["counts"],
+                "z_scores": r["null_result"].z_scores,
+                "acceptance_rate": r["null_result"].acceptance_rate,
+                "census_summary": r["census_summary"],
+            }
+            graph_summaries.append(gs)
+    summary["graphs"] = graph_summaries
+
+    # Task-level Z-scores
+    summary["task_zscores"] = task_zscores
+
+    # Cross-graph aggregation
+    all_z: dict[str, list[float]] = {}
+    for category, results_list in per_graph.items():
+        for r in results_list:
+            for motif_name, z in r["null_result"].z_scores.items():
+                all_z.setdefault(motif_name, []).append(z)
+
+    motif_overview = []
+    for motif_name, z_values in all_z.items():
+        z_arr = np.array(z_values)
+        motif_overview.append({
+            "motif": motif_name,
+            "mean_z": float(np.mean(z_arr)),
+            "std_z": float(np.std(z_arr)),
+            "median_z": float(np.median(z_arr)),
+            "n_enriched": int(np.sum(z_arr > 2.0)),
+            "n_depleted": int(np.sum(z_arr < -2.0)),
+            "n_graphs": len(z_arr),
+        })
+    motif_overview.sort(key=lambda x: abs(x["mean_z"]), reverse=True)
+    summary["motif_overview"] = motif_overview
+
+    return summary
+
+
 # --- CLI entry point ---
 
 if __name__ == "__main__":
@@ -488,11 +747,38 @@ if __name__ == "__main__":
         "--motif-size", type=int, default=3,
         help="Motif size (3 or 4)",
     )
+    parser.add_argument(
+        "--null-type", type=str, default="configuration",
+        choices=["configuration", "erdos_renyi", "layer_preserving", "layer_pair_config"],
+        help="Null model type for standard triad census",
+    )
+    parser.add_argument(
+        "--unrolled", action="store_true",
+        help="Run unrolled motif analysis instead of standard triad census",
+    )
+    parser.add_argument(
+        "--weight-threshold", type=float, default=0.0,
+        help="Minimum absolute edge weight for unrolled motif matching",
+    )
+    parser.add_argument(
+        "--max-layer-gap", type=int, default=5,
+        help="Maximum layer gap per edge for unrolled motif matching",
+    )
     args = parser.parse_args()
 
-    run_pipeline(
-        data_dir=args.data_dir,
-        results_dir=args.results_dir,
-        n_random=args.n_random,
-        motif_size=args.motif_size,
-    )
+    if args.unrolled:
+        run_unrolled_pipeline(
+            data_dir=args.data_dir,
+            results_dir=args.results_dir,
+            n_random=args.n_random,
+            weight_threshold=args.weight_threshold,
+            max_layer_gap=args.max_layer_gap,
+        )
+    else:
+        run_pipeline(
+            data_dir=args.data_dir,
+            results_dir=args.results_dir,
+            n_random=args.n_random,
+            motif_size=args.motif_size,
+            null_type=args.null_type,
+        )

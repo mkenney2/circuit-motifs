@@ -270,6 +270,11 @@ def hierarchical_clustering(
             distances.append(dist)
 
     dist_array = np.array(distances)
+
+    # Replace NaN distances (from zero SP vectors) with max distance
+    if np.any(np.isnan(dist_array)):
+        dist_array = np.nan_to_num(dist_array, nan=1.0)
+
     Z = linkage(dist_array, method=method)
 
     return Z, tasks

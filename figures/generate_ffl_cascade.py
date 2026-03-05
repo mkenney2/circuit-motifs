@@ -441,8 +441,8 @@ def generate_graph_figure(g, key_ffls):
     non_motif_edges = [e for e in all_edges if e not in all_motif_edges]
     if non_motif_edges:
         nx.draw_networkx_edges(
-            nxg, pos, edgelist=non_motif_edges, alpha=0.18,
-            edge_color="#aaaaaa", arrows=True, arrowsize=4,
+            nxg, pos, edgelist=non_motif_edges, alpha=0.35,
+            edge_color="#888888", arrows=True, arrowsize=4,
             connectionstyle="arc3,rad=0.05", ax=ax, node_size=18,
         )
 
@@ -457,17 +457,17 @@ def generate_graph_figure(g, key_ffls):
     ctx_feature = [n for n in feature_nodes if n not in all_motif_nodes]
 
     if ctx_emb:
-        nx.draw_networkx_nodes(nxg, pos, nodelist=ctx_emb, node_size=25,
-                               node_color="#a8d8ea", edgecolors="#3182bd",
-                               linewidths=0.7, node_shape="s", alpha=0.55, ax=ax)
+        nx.draw_networkx_nodes(nxg, pos, nodelist=ctx_emb, node_size=30,
+                               node_color="#7bbbd4", edgecolors="#2171a5",
+                               linewidths=0.8, node_shape="s", alpha=0.75, ax=ax)
     if ctx_feature:
-        nx.draw_networkx_nodes(nxg, pos, nodelist=ctx_feature, node_size=18,
-                               node_color="#c0c0c0", edgecolors="#666666",
-                               linewidths=0.5, node_shape="o", alpha=0.45, ax=ax)
+        nx.draw_networkx_nodes(nxg, pos, nodelist=ctx_feature, node_size=22,
+                               node_color="#999999", edgecolors="#444444",
+                               linewidths=0.6, node_shape="o", alpha=0.65, ax=ax)
     if ctx_logit:
-        nx.draw_networkx_nodes(nxg, pos, nodelist=ctx_logit, node_size=35,
-                               node_color="#c3e6cb", edgecolors="#41ab5d",
-                               linewidths=0.8, node_shape="p", alpha=0.55, ax=ax)
+        nx.draw_networkx_nodes(nxg, pos, nodelist=ctx_logit, node_size=40,
+                               node_color="#8fd4a0", edgecolors="#2d8b41",
+                               linewidths=0.9, node_shape="p", alpha=0.75, ax=ax)
 
     # --- Motif edges (thick, colored by FFL) ---
     for ffl_info in key_ffls:
@@ -560,7 +560,7 @@ def generate_graph_figure(g, key_ffls):
         ax.annotate(
             display, xy=(x, y),
             xytext=(best_ox, best_oy), textcoords="offset points",
-            fontsize=7, ha=ha,
+            fontsize=12, ha=ha,
             va="bottom" if best_oy > 0 else "top",
             bbox=dict(boxstyle="round,pad=0.2", facecolor="white",
                       edgecolor=primary_color, alpha=0.92, linewidth=1.2),
@@ -577,7 +577,7 @@ def generate_graph_figure(g, key_ffls):
 
     layer_y_positions = [i * 1.0 for i in range(len(sorted_layers))]
     ax.set_yticks(layer_y_positions)
-    ax.set_yticklabels(layer_labels, fontsize=8, color="#333333",
+    ax.set_yticklabels(layer_labels, fontsize=13, color="#333333",
                        fontfamily="monospace", fontweight="bold")
     ax.yaxis.set_ticks_position("left")
 
@@ -592,7 +592,7 @@ def generate_graph_figure(g, key_ffls):
             else:
                 token_tick_labels.append(f"[{ctx}]")
         ax.set_xticks([x * 1.0 for x in token_x_positions])
-        ax.set_xticklabels(token_tick_labels, fontsize=8, rotation=45,
+        ax.set_xticklabels(token_tick_labels, fontsize=13, rotation=45,
                            ha="right", color="#333333", fontstyle="italic")
         ax.xaxis.set_ticks_position("bottom")
 
@@ -625,14 +625,15 @@ def generate_graph_figure(g, key_ffls):
         plt.Line2D([0], [0], color="#d62728", linewidth=2.5, linestyle="--",
                    label="Inhibitory edge")
     )
-    ax.legend(handles=legend_handles, loc="upper left", fontsize=7.5,
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=12,
               framealpha=0.92, edgecolor="#cccccc", fancybox=True)
 
     prompt = g["prompt"] if "prompt" in g.attributes() else ""
     prompt_display = prompt if len(prompt) <= 60 else prompt[:57] + "..."
     ax.set_title(
-        f'Attribution Graph with FFL Overlays\n"{prompt_display}"',
-        fontsize=13, fontweight="bold", loc="left", pad=10,
+        f'Attribution Graph with FFL Overlays\n"{prompt_display}"'
+        f'    (edge weight threshold = {WEIGHT_THRESHOLD})',
+        fontsize=18, fontweight="bold", loc="left", pad=10,
     )
 
     plt.tight_layout()
