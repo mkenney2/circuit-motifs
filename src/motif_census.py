@@ -134,6 +134,94 @@ def compute_motif_census(graph: ig.Graph, size: int = 3) -> MotifCensusResult:
     )
 
 
+@dataclass(frozen=True)
+class TriadIdentityGaps:
+    """Both sides of the three triad counting identities for one graph.
+
+    In a simple directed acyclic graph (DAG):
+
+        chains   + loops == two_step_paths
+        fan_ins  + loops == pairs_in
+        fan_outs + loops == pairs_out
+
+    Every two-step path A->B->C is a chain, or part of a feedforward loop if
+    the shortcut A->C also exists. Every pair of edges into one node is a
+    fan-in or part of a loop; every pair of edges out of one node is a fan-out
+    or part of a loop. The right-hand sides depend only on each node's in- and
+    out-degree, so a null model that preserves degrees fixes all three totals,
+    and one extra loop forces exactly one fewer chain, fan-in and fan-out.
+
+    Attribution graphs are DAGs (every edge goes from an earlier layer to a
+    later one), so the identities hold for them. A cycle or a mutual edge
+    breaks them.
+
+    Attributes:
+        chains: Count of 021C triads.
+        loops: Count of 030T (feedforward loop) triads.
+        fan_ins: Count of 021U triads.
+        fan_outs: Count of 021D triads.
+        two_step_paths: Sum over nodes of in_degree * out_degree.
+        pairs_in: Sum over nodes of in_degree choose 2.
+        pairs_out: Sum over nodes of out_degree choose 2.
+    """
+    chains: int
+    loops: int
+    fan_ins: int
+    fan_outs: int
+    two_step_paths: int
+    pairs_in: int
+    pairs_out: int
+
+    @property
+    def gap_chain(self) -> int:
+        """chains + loops - two_step_paths; 0 when the chain identity holds."""
+        return self.chains + self.loops - self.two_step_paths
+
+    @property
+    def gap_fan_in(self) -> int:
+        """fan_ins + loops - pairs_in; 0 when the fan-in identity holds."""
+        return self.fan_ins + self.loops - self.pairs_in
+
+    @property
+    def gap_fan_out(self) -> int:
+        """fan_outs + loops - pairs_out; 0 when the fan-out identity holds."""
+        return self.fan_outs + self.loops - self.pairs_out
+
+    @property
+    def gaps(self) -> tuple[int, int, int]:
+        """(gap_chain, gap_fan_in, gap_fan_out); all 0 when the identities hold."""
+        return (self.gap_chain, self.gap_fan_in, self.gap_fan_out)
+
+
+def triad_identity_gaps(graph: ig.Graph) -> TriadIdentityGaps:
+    """Compute both sides of the three triad counting identities.
+
+    See TriadIdentityGaps for the identities and when they hold.
+
+    Args:
+        graph: A directed igraph.Graph.
+
+    Returns:
+        TriadIdentityGaps with the four triad counts, the three degree-based
+        totals, and the gaps between them.
+
+    Raises:
+        ValueError: If graph is not directed.
+    """
+    counts = compute_motif_census(graph, size=3).raw_counts
+    in_degrees = graph.indegree()
+    out_degrees = graph.outdegree()
+    return TriadIdentityGaps(
+        chains=counts[MOTIF_CHAIN],
+        loops=counts[MOTIF_FFL],
+        fan_ins=counts[MOTIF_FAN_IN],
+        fan_outs=counts[MOTIF_FAN_OUT],
+        two_step_paths=sum(i * o for i, o in zip(in_degrees, out_degrees)),
+        pairs_in=sum(d * (d - 1) // 2 for d in in_degrees),
+        pairs_out=sum(d * (d - 1) // 2 for d in out_degrees),
+    )
+
+
 def compute_triad_census_networkx(graph: ig.Graph) -> dict[str, int]:
     """Cross-validate triad census using NetworkX.
 
@@ -209,13 +297,19 @@ def enriched_motifs(
 # --- Motif instance finding ---
 
 # Semantic role names for key size-3 motif types.
-# Keys are igraph isoclass IDs; values are ordered role lists matching the
-# canonical node ordering returned by get_subisomorphisms_vf2().
+# Keys are igraph isoclass IDs; values are role lists in the node order of the
+# pattern graph ig.Graph.Isoclass(n=3, cls=isoclass, directed=True), which is
+# the order get_subisomorphisms_vf2() maps from. Pattern edges on igraph 1.0.0:
+#   021U fan-in   2->0, 1->0         node 0 receives both edges
+#   021C chain    2->0, 0->1         the path is 2 -> 0 -> 1
+#   021D fan-out  2->1, 2->0         node 2 sends both edges
+#   030T FFL      2->1, 2->0, 1->0   node 2 sends both, node 0 receives both
+# tests/test_triad_identities.py checks these orders against edge directions.
 MOTIF_ROLES: dict[int, list[str]] = {
-    2:  ["source_a", "source_b", "target"],       # 021U fan-in
-    4:  ["source", "mediator", "target"],          # 021C chain
-    6:  ["source", "target_a", "target_b"],        # 021D fan-out
-    7:  ["regulator", "mediator", "target"],        # 030T feedforward loop
+    2:  ["target", "source_a", "source_b"],        # 021U fan-in
+    4:  ["mediator", "target", "source"],          # 021C chain
+    6:  ["target_a", "target_b", "source"],        # 021D fan-out
+    7:  ["target", "mediator", "regulator"],       # 030T feedforward loop
     11: ["node_a", "node_b", "node_c"],            # 030C cycle
     15: ["node_a", "node_b", "node_c"],            # 300 complete
 }

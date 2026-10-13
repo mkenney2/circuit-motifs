@@ -26,6 +26,8 @@ We tested FFL enrichment against four progressively stricter null models, each c
 
 ~80% of the raw FFL signal is architectural (layer structure + hub degrees). The remaining ~20% is genuine learned wiring, present in 96/99 individual graphs.
 
+Under the layer-pair config null, the four rows above are one finding stated four times. In a DAG, chains + FFLs equals the number of two-step paths, fan-ins + FFLs equals the number of edge pairs into a node, and fan-outs + FFLs equals the number of edge pairs out of a node. Those three totals depend only on node degrees, which that null preserves, so every extra FFL costs exactly one chain, one fan-in and one fan-out, and the three non-FFL Z-scores are the FFL Z-score with the sign flipped (+18 / -18 / -18 / -18). The FFL enrichment stands, but the triad profile under that null cannot tell tasks apart; use 4-node motifs or the signed templates for task fingerprints. `triad_identity_gaps()` in `motif_census.py` returns both sides of each identity, and `tests/test_triad_identities.py` checks them on the Dallas graph (10,150 chains + 16,125 FFLs = 26,275 two-step paths).
+
 ### Signed motifs reveal coherent reinforcement
 
 Extending the analysis to **signed motifs** --- incorporating edge polarity (excitatory vs. inhibitory) --- reveals a second, independent layer of learned structure invisible to unsigned analysis:
@@ -219,6 +221,8 @@ circuit-motifs/
 ```bash
 pytest
 ```
+
+`tests/test_triad_identities.py` also checks that the role names in `MOTIF_ROLES` (`regulator`, `mediator`, `target` for FFLs, and the chain, fan-in and fan-out roles) sit on the nodes whose edge directions fit them. Earlier versions listed the names in reverse order, which affected labels and colors in figures and the explorer app but not any counts or Z-scores.
 
 ## Data Sources
 
